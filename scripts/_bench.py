@@ -29,26 +29,49 @@ GENERATOR_DIRS = {
 }
 
 
-def ensure_venv(bench):
-    """若当前解释器没有 torch，而 bench 里有自带 venv，则自动用它重新执行。
+# 带 torch 的解释器候选。**必须是一个列表，不能只写 bench/.venv**：
+# 本地实际把依赖装在 ~/.venvs/aigc，而 bench/.venv 并不存在 ——
+# 于是"自动切解释器"这条路径在真机上直接失败（回归测试抓到的）。
+VENV_CANDIDATES = [
+    os.environ.get("AIGC_VENV_PYTHON"),
+    os.path.expanduser("~/.venvs/aigc/bin/python"),
+]
 
-    依赖（torch/transformers）装在回测工程的 venv 里，用户不该操心这件事。
-    只在"当前解释器缺 torch 且 bench venv 存在"时切换，避免无限递归。
+
+def _venv_python(bench):
+    """找一个真的存在、且**真的装得下 torch** 的解释器。"""
+    cands = [os.path.join(bench, ".venv", "bin", "python")] + VENV_CANDIDATES
+    for vpy in cands:
+        if vpy and os.path.exists(vpy):
+            return vpy
+    return None
+
+
+def ensure_venv(bench):
+    """若当前解释器没有 torch，则用一个装了 torch 的解释器重新执行。
+
+    依赖（torch/transformers）不在 skill 目录里，用户不该操心这件事。
+    只在"当前解释器缺 torch"时切换，避免无限递归。
     """
     import importlib.util
     if importlib.util.find_spec("torch") is not None:
         return
     if os.environ.get("_AIGC_VENV_REEXEC") == "1":
         raise SystemExit(
-            "已切换到 bench 的 venv，但仍找不到 torch。\n"
-            f"请检查 {bench}/.venv，或手动安装：\n"
-            f"  cd {bench} && uv pip install --python .venv/bin/python torch transformers")
-    vpy = os.path.join(bench, ".venv", "bin", "python")
-    if not os.path.exists(vpy):
+            "已切换过解释器，但仍找不到 torch。\n"
+            "请显式指定：export AIGC_VENV_PYTHON=/path/to/bin/python\n"
+            "或手动安装：python3 -m venv ~/.venvs/aigc && "
+            "~/.venvs/aigc/bin/pip install torch transformers numpy")
+    vpy = _venv_python(bench)
+    if vpy is None:
+        tried = [os.path.join(bench, ".venv", "bin", "python")] + [c for c in VENV_CANDIDATES if c]
         raise SystemExit(
-            f"缺少依赖：当前 Python 没有 torch，且未找到 {vpy}。\n"
-            f"请先创建环境：cd {bench} && uv venv --python 3.12 .venv && "
-            "uv pip install --python .venv/bin/python torch transformers numpy")
+            "缺少依赖：当前 Python 没有 torch，也没有找到可用的解释器。\n"
+            "已尝试：\n" + "".join(f"  - {t}\n" for t in tried) +
+            "创建方式：\n"
+            "  python3 -m venv ~/.venvs/aigc\n"
+            "  ~/.venvs/aigc/bin/pip install torch transformers numpy\n"
+            "或指定：export AIGC_VENV_PYTHON=/path/to/bin/python")
     env = dict(os.environ, _AIGC_VENV_REEXEC="1")
     os.execve(vpy, [vpy, os.path.abspath(sys.argv[0])] + sys.argv[1:], env)
 

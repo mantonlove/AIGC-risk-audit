@@ -15,6 +15,11 @@
 
     # 只看某些段落：先切好文件，或直接粘贴单段文本到 .txt
 
+**先读这条**：语料实测显示 LLM 改写**不降低检出率**（n=240/组，三检测器）。
+真正有效的是"把你自己知道的真实信息补进去"——那是 `scripts/anchor.py`。
+所以正常顺序是：**先 anchor.py 补事实，再考虑本引擎**。详见
+`references/edit-effects.md`。
+
 工作原理（检测器引导，不靠经验删词）
 ------------------------------------
 1. 逐段用**本地检测器**打分，找出最可疑的段落；
@@ -120,6 +125,16 @@ def main():
             if (not args.only_flagged) or s["score"] >= args.flag_threshold]
     print(f"需改写段落 {len(todo)}/{len(paras)} 段\n")
 
+    # **先判断有没有必要载入生成模型。**
+    # 生成模型是数 GB 的权重，载入本身就要几十秒；而如果没有任何段落需要改，
+    # 载入纯属浪费。更实际的场景是用户在**还没补具体信息**时就来跑这个引擎 ——
+    # 那种情况下先跑 anchor.py 更有效（实测见 references/edit-effects.md）。
+    if not todo:
+        print(f"没有段落超过阈值 {args.flag_threshold}，无需 LLM 改写。")
+        if args.out:
+            open(args.out, "w", encoding="utf-8").write(text)
+        return 0
+
     rw = Rewriter(model, sb)
     out_paras, history = [], []
     for i, p in enumerate(paras):
@@ -155,6 +170,16 @@ def main():
     print("=" * 64)
     print("提醒：这是**开源检测器上的**分数变化。知网/PaperPass/学习通等平台"
           "本机无法测量，不构成对它们的预测。提交前请通读改写稿。")
+    print()
+    print("⚠️ **本引擎的机制与实测结论相冲突，必须知道**：")
+    print("   语料实测（n=240/组，三检测器）显示 "
+          "**LLM 改写不降低检出率**：")
+    print("     M00 基底 75% → M10 加事实 74% → M01 加立场 75% → M11 两者 72%")
+    print("     （d_hello，阈值 0.5；d_cmj/d_zhv3 上是持平或略升）")
+    print("   原因见 references/edit-effects.md：让 LLM『改写得更具体』，")
+    print("   产出的是**更流畅的概括**，正好是平台『改写后信息量差』信号的靶心。")
+    print("   → **优先用 scripts/anchor.py 补你自己的真实信息**；")
+    print("     本引擎只适合已经补完事实、还想试表层改写的场景。")
 
     out_path = args.out or (os.path.splitext(args.path)[0] + "_降低AIGC.txt")
     open(out_path, "w", encoding="utf-8").write(result)

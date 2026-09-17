@@ -286,6 +286,105 @@ def g3():
 
 
 # --------------------------------------------------------------------------- #
+#  I. 聚合口径（aggregate.py）—— 唯一直接对应平台报告字段的计算
+# --------------------------------------------------------------------------- #
+
+def _agg():
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import aggregate as ag
+    return ag
+
+
+@case("AGG-字数加权须让长段主导", "段落等权会让 20 字过渡段与 200 字论证段同权，"
+      "而平台的分子分母都按字数算")
+def i1():
+    ag = _agg()
+    v = ag.aggregate([0.9, 0.1], [200, 20], "char_weighted")
+    return abs(v - (0.9 * 200 + 0.1 * 20) / 220) < 1e-9 and v > 0.8, f"char_weighted={v:.4f}"
+
+
+@case("AGG-三种口径在长短悬殊时须显著不同",
+      "如果三者给出同一个数，说明有口径没起作用")
+def i2():
+    ag = _agg()
+    a = {k: ag.aggregate([0.9, 0.1], [200, 20], k) for k in ag.AGG_CHOICES}
+    ok = a["max"] == 0.9 and abs(a["mean"] - 0.5) < 1e-9 and a["char_weighted"] > 0.8
+    return ok, f"{a}"
+
+
+@case("AGG-疑似字数占比须与手算一致", "这是与平台 aigcRatio 同构的字段，算错就是误导")
+def i3():
+    ag = _agg()
+    f, t, r = ag.flagged_char_ratio([0.9, 0.4, 0.6], [100, 200, 300], 0.5)
+    return (f, t) == (400, 600) and abs(r - 400 / 600) < 1e-9, f"({f},{t},{r:.4f})"
+
+
+@case("AGG-判定线边界：恰好 0.5 须算疑似", "知网原文是『>=0.5 即为疑似』，边界必须含等号")
+def i4():
+    ag = _agg()
+    f, _, _ = ag.flagged_char_ratio([0.5], [100], 0.5)
+    return f == 100, f"0.5 被算作疑似字数={f}"
+
+
+@case("AGG-全零权重不得除零，须退回等权", "真实输入可能出现全零字数的段")
+def i5():
+    ag = _agg()
+    v = ag.aggregate([0.8, 0.2], [0, 0], "char_weighted")
+    return abs(v - 0.5) < 1e-9, f"{v}"
+
+
+@case("AGG-空输入返回 0.0 而非 NaN", "NaN 会让下游所有比较为假，静默失效")
+def i6():
+    ag = _agg()
+    v = ag.aggregate([], [], "char_weighted")
+    return v == 0.0, f"{v!r}"
+
+
+@case("AGG-长度不匹配须截断而不是错配", "分数与权重错位会让分数落到错误的段上")
+def i7():
+    ag = _agg()
+    # 分数 2 个、权重 1 个 → 只算第一段
+    v = ag.aggregate([0.9, 0.1], [50], "char_weighted")
+    return abs(v - 0.9) < 1e-9, f"{v}"
+
+
+@case("AGG-未知口径须报错，不得静默取默认", "静默默认会让你以为用的是平台口径")
+def i8():
+    ag = _agg()
+    try:
+        ag.aggregate([0.5], [1], "median")
+        return False, "未报错"
+    except ValueError as e:
+        return "未知聚合口径" in str(e), str(e)[:60]
+
+
+@case("AGG-加一个短而干净的段不得**升高**字数加权分（不变量）",
+      "这是加权口径的定义性质：新增长度占比为 w 的干净段，"
+      "分数必须朝 0 移动，不可能反向。若这条失败说明权重用反了。")
+def i9():
+    ag = _agg()
+    base = ag.aggregate([0.9], [200], "char_weighted")
+    added = ag.aggregate([0.9, 0.0], [200, 50], "char_weighted")
+    return added < base, f"{base:.4f} → {added:.4f}"
+
+
+@case("AGG-权重方向：长段必须比短段权重大（精确数值）",
+      "突变测试发现原用例选的两段权重比恰好让方向不可分。"
+      "这里用 1:4 的权重比，把加权值算到小数位 —— 权重用反时结果会明显不同。")
+def i10():
+    ag = _agg()
+    v = ag.aggregate([1.0, 0.0], [1, 4], "char_weighted")
+    return abs(v - 0.2) < 1e-9, f"期望 0.2，实得 {v:.6f}"
+
+
+@case("AGG-疑似字数占比也须按正确权重方向", "同一个权重用反会让占比高估")
+def i11():
+    ag = _agg()
+    f, t, r = ag.flagged_char_ratio([1.0, 0.0], [1, 4], 0.5)
+    return (f, t) == (1, 5) and abs(r - 0.2) < 1e-9, f"({f},{t},{r:.4f})"
+
+
+# --------------------------------------------------------------------------- #
 #  H. CLI 契约：用户最先碰到的东西
 # --------------------------------------------------------------------------- #
 
@@ -348,6 +447,22 @@ def h7():
     payload = json.dumps({"prompt": "知网查重怎么收费？"})
     code, out = _run("aigc_trigger_hook.py", [], stdin=payload)
     return code == 0 and "AIGC" not in out, f"exit={code} out={out[:120]!r}"
+
+
+@case("CLI-reduce_aigc --help 须点明「LLM 改写实测不降分」并指向 anchor.py",
+      "引擎的机制与实测结论相冲突，帮助文本里不写清就是误导用户花算力")
+def h8():
+    code, out = _run("reduce_aigc.py", ["--help"])
+    ok = code == 0 and "不降低检出率" in out and "anchor.py" in out
+    return ok, f"exit={code} 含冲突声明={'不降低检出率' in out} 指向 anchor={'anchor.py' in out}"
+
+
+@case("CLI-score_text --help 须说明三种聚合口径与平台字段的关系",
+      "char_weighted 是唯一对齐平台 aigcRatio 的口径，用户必须知道默认是它")
+def h9():
+    code, out = _run("score_text.py", ["--help"])
+    ok = code == 0 and "char_weighted" in out and "字数加权" in out
+    return ok, f"exit={code}"
 
 
 def main() -> int:

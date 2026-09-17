@@ -24,6 +24,9 @@ import tempfile
 SKILL = pathlib.Path(__file__).resolve().parent.parent
 SUITE_TIMEOUT = 300
 
+# 每个突变针对的文件（相对 skill 根）。汇总时按文件分组统计。
+TARGETS = {"anchor": "scripts/anchor.py", "aggregate": "scripts/aggregate.py"}
+
 MUTATIONS: list[tuple[str, str, str]] = [
     # ---- 模式失效（每个模式都要有守卫）----
     ("匿名机构模式失效",
@@ -69,6 +72,26 @@ MUTATIONS: list[tuple[str, str, str]] = [
     ("JSON 汇总数与明细不一致（vague_hits 少报）",
      '"vague_hits": len(hits),',
      '"vague_hits": 0,'),
+
+    # ---- 聚合口径（aggregate.py）：唯一直接对应平台报告字段的计算 ----
+    ("AGG-字数加权退化为段落等权",
+     '    return float(sum(s * wi for s, wi in zip(sc, w)) / tw)',
+     '    return float(sum(sc) / len(sc))'),
+    ("AGG-权重被用反（短段反而权重大）",
+     '    w = [max(float(x), 0.0) for x in weights[:n]]',
+     '    w = [1.0 / max(float(x), 1.0) for x in weights[:n]]'),
+    ("AGG-疑似字数占比：边界改为严格大于",
+     '    flagged = sum(wi for s, wi in zip(sc, w) if s >= threshold)',
+     '    flagged = sum(wi for s, wi in zip(sc, w) if s > threshold)'),
+    ("AGG-全零权重改为直接除零（不退回等权）",
+     '    if tw <= 0:\n        # 全部段字数都是 0：退回等权，而不是除零。\n        return float(sum(sc) / len(sc)) if sc else 0.0',
+     '    if False:\n        return 0.0'),
+    ("AGG-未知聚合口径静默取 mean（不报错）",
+     '    if agg not in AGG_CHOICES:\n        raise ValueError(f"未知聚合口径 {agg!r}，可选 {AGG_CHOICES}")',
+     '    if False:\n        raise ValueError("x")'),
+    ("AGG-空输入返回 NaN 而非 0.0",
+     '    if not scores:\n        return 0.0',
+     '    if not scores:\n        return float("nan")'),
 ]
 
 
@@ -82,13 +105,20 @@ def run_suite(cwd: pathlib.Path) -> int:
     return sum(1 for ln in r.stdout.splitlines() if ln.startswith("FAIL"))
 
 
+# 每条突变默认作用于 anchor.py；以 "AGG:" 前缀标注的条目作用于 aggregate.py。
+TARGET_FOR: dict[str, str] = {}
+
+
+def _target_of(label: str) -> str:
+    return "aggregate" if label.startswith("AGG-") else "anchor"
+
+
 def main() -> int:
-    src = SKILL / "scripts" / "anchor.py"
-    good = hashlib.sha256(src.read_bytes()).hexdigest()
+    srcs = {k: SKILL / v for k, v in TARGETS.items()}
+    good = {k: hashlib.sha256(p.read_bytes()).hexdigest() for k, p in srcs.items()}
     work = pathlib.Path(tempfile.mkdtemp(prefix="aigc-mut-"))
     sand = work / "skill"
     shutil.copytree(SKILL, sand, ignore=shutil.ignore_patterns("__pycache__", ".git"))
-    sand_src = sand / "scripts" / "anchor.py"
 
     try:
         base = run_suite(sand)
@@ -96,6 +126,8 @@ def main() -> int:
         print("=" * 92)
         missed, invalid = [], []
         for label, old, new in MUTATIONS:
+            tgt = TARGETS[_target_of(label)]
+            sand_src = sand / tgt
             content = sand_src.read_text(encoding="utf-8")
             n = content.count(old)
             if n != 1:
@@ -118,14 +150,15 @@ def main() -> int:
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
-    if hashlib.sha256(src.read_bytes()).hexdigest() != good:
-        print("\n!! 严重：源文件在突变测试期间被改动")
-        return 2
+    for k, p in srcs.items():
+        if hashlib.sha256(p.read_bytes()).hexdigest() != good[k]:
+            print(f"\n!! 严重：源文件在突变测试期间被改动（{p}）")
+            return 2
 
     total = len(MUTATIONS)
     caught = total - len(missed)
     print("=" * 92)
-    print(f"源文件未被改动（sha256 {good[:16]}…）")
+    print("源文件未被改动（" + "  ".join(f"{k}={v[:12]}…" for k, v in good.items()) + "）")
     print(f"覆盖统计：{caught}/{total} 处突变被用例保护"
           f"（{caught * 100 // total if total else 0}%），未覆盖 {len(missed)} 处")
     if invalid:
