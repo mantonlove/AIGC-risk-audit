@@ -160,36 +160,65 @@ def b8():
 #  C. 覆盖率与比较模式
 # --------------------------------------------------------------------------- #
 
-@case("C-覆盖率：全干净文本应为 1.0", "覆盖率是用户唯一能看到的进展指标，必须可核对")
+@case("C-具体性密度：有具体信息的文本须高于空洞文本",
+      "主指标必须真的区分得开，否则它只是个装饰数字。"
+      "（原主指标是二元覆盖率，自查发现它与检测分数几乎不相关，已降为参考项）")
 def c1():
     _, p = run_anchor("样本为 2019—2024 年 312 只基金（n=312），回归系数 −0.34（SE 0.11）。")
-    return p["before"]["anchor_coverage"] == 1.0, f"覆盖率={p['before']['anchor_coverage']}"
+    _, q = run_anchor("随着技术不断发展，某高校的研究表明该方法具有重要意义。")
+    ok = p["before"]["concrete_density"] > q["before"]["concrete_density"] > 0
+    return ok, f"具体 {p['before']['concrete_density']} vs 空洞 {q['before']['concrete_density']}"
 
 
-@case("C-覆盖率：空洞文本应为 0", "反向：没有任何具体信息的段不该算已锚定")
+@case("C-具体性密度：无任何具体项的文本须为 0", "反向：没有具体项的文本密度必须为 0")
 def c2():
-    _, p = run_anchor("随着技术不断发展，某高校的研究表明该方法具有重要意义。")
-    return p["before"]["anchor_coverage"] == 0.0, f"覆盖率={p['before']['anchor_coverage']}"
+    _, p = run_anchor("某高校的调查显示，接受度较高。")
+    return p["before"]["concrete_density"] == 0.0, f"密度={p['before']['concrete_density']}"
 
 
-@case("C-比较模式须报出覆盖率提高", "改完之后要能量化「具体性提高了没有」")
+@case("C-空洞密度须随空洞数量单调上升", "两个密度都必须是可解释的量，不是凑出来的数")
+def c3b():
+    _, a = run_anchor("某高校的调查显示，接受度较高。")
+    _, b = run_anchor("某高校的调查显示，大量研究表明，在一定程度上具有重要意义。")
+    return b["before"]["vague_density"] > a["before"]["vague_density"], \
+        f"{a['before']['vague_density']} vs {b['before']['vague_density']}"
+
+
+@case("C-比较模式须报出具体性提高", "改完之后要能量化「具体性提高了没有」")
 def c3():
     before = "某高校的调查显示，学生对AI工具的接受度较高。"
     after = "北京大学 2023 年对 1,204 名学生的调查显示，接受度为 68.4%。"
     _, p = run_anchor(before, compare=after)
-    ok = (p["after"]["anchor_coverage"] > p["before"]["anchor_coverage"]
-          and p["after"]["vague_hits"] < p["before"]["vague_hits"])
-    return ok, f"覆盖率 {p['before']['anchor_coverage']}→{p['after']['anchor_coverage']}"
+    ok = (p["after"]["concrete_density"] > p["before"]["concrete_density"]
+          and p["after"]["vague_density"] < p["before"]["vague_density"])
+    return ok, (f"具体性 {p['before']['concrete_density']}→{p['after']['concrete_density']}  "
+                f"空洞 {p['before']['vague_density']}→{p['after']['vague_density']}")
 
 
 @case("C-比较模式：只换措辞不得报「提高了」",
-      "把「某高校」换成「有关院校」是换词不是锚定 —— 覆盖率不能上升")
+      "把「某高校」换成「有关院校」是换词不是锚定 —— 具体性不能上升")
 def c4():
     before = "某高校的调查显示，接受度较高。"
     after = "有关院校的调查显示，接受度较高。"
     _, p = run_anchor(before, compare=after)
-    return (p["after"]["anchor_coverage"] <= p["before"]["anchor_coverage"]), \
-        f"覆盖率 {p['before']['anchor_coverage']}→{p['after']['anchor_coverage']}"
+    return (p["after"]["concrete_density"] <= p["before"]["concrete_density"]), \
+        f"具体性 {p['before']['concrete_density']}→{p['after']['concrete_density']}"
+
+
+@case("C-比较模式：两边同时升高时判据须为「未改善」",
+      "判据是「具体性升高 **且** 空洞不升高」。只升高一边不算改善 ——"
+      "否则「一边补具体、一边加套话」会被判成改善。这条用同一段文字精确构造。")
+def c6():
+    before = "北京大学 2023 年对 1,204 名学生调查，接受度为 68.4%。某高校的调查显示，接受度较高。"
+    after = ("北京大学 2023 年对 1,204 名学生调查，接受度为 68.4%。"
+             "某高校的调查显示，大量研究表明，在一定程度上具有重要意义。")
+    _, p = run_anchor(before, compare=after)
+    b, a = p["before"], p["after"]
+    improved = (a["concrete_density"] > b["concrete_density"]
+                and a["vague_density"] <= b["vague_density"])
+    return (not improved) and a["vague_density"] > b["vague_density"], \
+        f"具体性 {b['concrete_density']}→{a['concrete_density']}  " \
+        f"空洞 {b['vague_density']}→{a['vague_density']}"
 
 
 @case("N-机构名内部含模式词时仍不得命中",
@@ -209,6 +238,17 @@ def c5():
     ok = ("hits_after" in p and "units_after" in p
           and len(p["units_after"]) >= 1 and isinstance(p["hits_after"], list))
     return ok, f"字段={[k for k in p if k.endswith('_after')]}"
+
+
+@case("C-段级覆盖率仍须正确（它已降为参考项，但报告里还在）",
+      "主指标换成连续密度后，覆盖率降为参考；降级不等于可以算错 ——"
+      "突变测试发现它一度没有任何用例保护。")
+def c7():
+    _, good = run_anchor("样本为 2019—2024 年 312 只基金（n=312），回归系数 −0.34。")
+    _, bad = run_anchor("某高校的调查显示，接受度较高。")
+    return (good["before"]["anchor_coverage"] == 1.0
+            and bad["before"]["anchor_coverage"] == 0.0), \
+        f"干净={good['before']['anchor_coverage']} 空洞={bad['before']['anchor_coverage']}"
 
 
 # --------------------------------------------------------------------------- #

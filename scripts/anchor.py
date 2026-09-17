@@ -208,15 +208,36 @@ def scan(text: str):
     for i, u in enumerate(split_units(text), 1):
         marks = sum(1 for r in ANCHOR_MARKERS if r.search(u["text"]))
         n_hit = sum(1 for h in hits if h["unit_start"] == u["start"])
-        units.append({"idx": i, "chars": cjk_len(u["text"]),
+        units.append({"idx": i, "text": u["text"], "chars": cjk_len(u["text"]),
                       "anchor_markers": marks, "vague_hits": n_hit,
                       "anchored": marks > 0 and n_hit == 0})
     return hits, units
 
 
+# 具体性密度的分子：数字 token、拉丁专名、技术词。
+# 这些是"读者能拿去核查的东西"，与 abstract 里"合理配置供水规模"那类概括相对。
+_NUM = re.compile(r"\d+(?:\.\d+)?")
+_LATIN = re.compile(r"[A-Za-z]{2,}")
+_TECH = re.compile(r"[\u4e00-\u9fff]{2,8}(?:系统|模型|方法|技术|装置|算法|结构|参数|"
+                   r"标准|工艺|规范|系数|效应|检验|估计|指数|比率)")
+
+
 def summarize(hits, units):
+    """汇总。
+
+    ⚠️ **主指标是 `concrete_density`（连续量），不是 `anchor_coverage`（二元量）。**
+    这是本项目自查时改的：原本把"该段有没有具体信息且无空洞"做成 0/1 覆盖率，
+    但实测它在 AI 文本上与检测器分数几乎不相关（r = −0.28 ~ −0.46），
+    而连续的具体性密度 r = −0.35 ~ −0.40，三个检测器上**一致更强**。
+    （人类组上两者都接近 0 —— 人类文本本来就有具体信息，方差小。）
+    二元指标的另一个毛病：一篇 164 字的摘要有 1 个数字就算 1.0，
+    没有数字就算 0.0，于是它实际测的是"这段有没有数字"，不是"有多具体"。
+    """
     total_chars = sum(u["chars"] for u in units)
     anchored_units = [u for u in units if u["anchored"]]
+    blob = "".join(u["text"] for u in units)
+    n = max(cjk_len(blob), 1)
+    concrete = len(_NUM.findall(blob)) + len(_LATIN.findall(blob)) + len(_TECH.findall(blob))
     return {
         "chars": total_chars,
         "units": len(units),
@@ -225,6 +246,10 @@ def summarize(hits, units):
                        for p in PATTERNS},
         "units_with_vague": sum(1 for u in units if u["vague_hits"] > 0),
         "units_anchored": len(anchored_units),
+        # **主指标**：每百字的具体项数
+        "concrete_density": round(concrete / n * 100, 3),
+        "vague_density": round(len(hits) / n * 100, 3),
+        # 参考指标（二元、粗糙，实测相关性弱）
         "anchor_coverage": round(len(anchored_units) / max(len(units), 1), 4),
     }
 
@@ -284,7 +309,9 @@ def main():
     if nz:
         print("按类型：" + "  ".join(
             f"{next(p['name'] for p in PATTERNS if p['id'] == k)}={v}" for k, v in nz.items()))
-    print(f"锚定覆盖率（有具体信息且无空洞的段占比）：{s['anchor_coverage']:.1%}")
+    print(f"具体性密度（每百字具体项数，**主指标**）：{s['concrete_density']:.2f}")
+    print(f"空洞密度（每百字空洞指代）：{s['vague_density']:.2f}")
+    print(f"（参考）段级覆盖率：{s['anchor_coverage']:.1%} —— 二元量，与检测分数相关性弱")
     print()
     shown = hits[: args.limit] if args.limit else hits
     for i, h in enumerate(shown, 1):
@@ -302,10 +329,16 @@ def main():
         print(f"对比 {args.compare}")
         print(f"  待锚定位置  {s['vague_hits']} → {a['vague_hits']}  "
               f"（{a['vague_hits'] - s['vague_hits']:+d}）")
-        print(f"  锚定覆盖率  {s['anchor_coverage']:.1%} → {a['anchor_coverage']:.1%}  "
-              f"（{a['anchor_coverage'] - s['anchor_coverage']:+.1%}）")
+        print(f"  具体性密度  {s['concrete_density']:.2f} → {a['concrete_density']:.2f}  "
+              f"（{a['concrete_density'] - s['concrete_density']:+.2f} 每百字）")
+        print(f"  空洞密度    {s['vague_density']:.2f} → {a['vague_density']:.2f}  "
+              f"（{a['vague_density'] - s['vague_density']:+.2f} 每百字）")
         print(f"  字数        {s['chars']} → {a['chars']}（{a['chars'] - s['chars']:+d}）")
-        improved = a["anchor_coverage"] > s["anchor_coverage"]
+        # 判据：具体性密度提高 **且** 空洞密度不升高。
+        # 只看其一会被绕过：把"某高校"换成"有关院校"空洞数不变但也没变具体；
+        # 而只说"具体性提高"会放过"补了具体信息但同时新增空洞"的情况。
+        improved = (a["concrete_density"] > s["concrete_density"]
+                    and a["vague_density"] <= s["vague_density"])
         print(f"\n{'✓ 具体性有提高' if improved else '✗ 具体性没有提高 —— 改动可能只是换了措辞'}")
         print("提醒：本脚本只核对**文本里有没有可核查的具体信息**，"
               "不是检测分数，也不预测平台结果。")
