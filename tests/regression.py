@@ -578,6 +578,28 @@ def j8():
     return "再送检一次" not in out and "多送检" not in out, "含反复送检建议"
 
 
+@case("DOC-description 不得声称「把检出分数压下来」",
+      "这是本 skill 最容易被误读的一句话，而实测结论恰恰相反："
+      "LLM 改写不降低检出率，只有补信息在均值上有效且有限。"
+      "description 是**模型路由的依据**，过度声称会直接把用户引向无效动作。")
+def k1():
+    fm = (ROOT / "SKILL.md").read_text(encoding="utf-8").split("---")[1]
+    banned = ["把文本的 AIGC 检出分数压下来", "保证过检", "确保通过检测",
+              "稳定过检", "必过知网"]
+    hit = [b for b in banned if b in fm]
+    ok = not hit and "不承诺" in fm
+    return ok, f"越界表述={hit} 含不承诺={'不承诺' in fm}"
+
+
+@case("DOC-边界声明须同时出现在 SKILL.md 与实测文档里",
+      "边界只在代码注释里写一次，用户是看不到的")
+def k2():
+    sk = (ROOT / "SKILL.md").read_text(encoding="utf-8")
+    ee = (ROOT / "references" / "edit-effects.md").read_text(encoding="utf-8")
+    return ("不承诺" in sk and "没有任何校准关系" in ee
+            and "不等价" in ee), "边界表述缺失"
+
+
 def main() -> int:
     fails = []
     print(f"aigc-risk-audit 回归 —— {len(CASES)} 条用例")
