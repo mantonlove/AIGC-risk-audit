@@ -465,6 +465,119 @@ def h9():
     return ok, f"exit={code}"
 
 
+# --------------------------------------------------------------------------- #
+#  J. 自证存证（evidence.py）—— 目标里的「自证存证」那一块
+# --------------------------------------------------------------------------- #
+
+def _mk_evidence(files: dict[str, str], subdirs: tuple[str, ...] = ()):
+    d = Path(tempfile.mkdtemp(prefix="aigc-evd-"))
+    for sd in subdirs:
+        (d / sd).mkdir(parents=True, exist_ok=True)
+    for rel, content in files.items():
+        fp = d / rel
+        fp.parent.mkdir(parents=True, exist_ok=True)
+        fp.write_text(content, encoding="utf-8")
+    return d
+
+
+def _run_evidence(d: Path, *extra: str):
+    p = subprocess.run([sys.executable, str(ROOT / "scripts" / "evidence.py"), ".", *extra],
+                       cwd=d, capture_output=True, text=True)
+    return p.returncode, p.stdout + p.stderr
+
+
+FULL_PACK = {
+    "提纲-v1.md": "# 提纲\n1. 引言",
+    "论文-初稿-v2.md": "# 初稿\n内容",
+    "导师反馈-20260610.md": "导师：第三章证据链不完整",
+    "资料/访谈01记录.md": "受访者 A：改革后费率下降",
+    "原始数据.csv": "a,b\n1,2",
+    "送检报告-20260620.md": "平台：知网 结果：22%",
+}
+
+
+@case("EVD-五类齐全时须报齐全", "这是用户唯一能看到的「我准备得够不够」的判据")
+def j1():
+    d = _mk_evidence(FULL_PACK)
+    code, out = _run_evidence(d, "--json")
+    r = json.loads(out)
+    return code == 0 and not r["missing"], f"missing={r['missing']}"
+
+
+@case("EVD-缺一类须点名并说明为什么需要", "只说「不齐」没用，要说缺哪类、为什么重要")
+def j2():
+    d = _mk_evidence({k: v for k, v in FULL_PACK.items() if "送检" not in k})
+    code, out = _run_evidence(d, "--json")
+    r = json.loads(out)
+    ok = "送检记录" in r["missing"] and r["categories"]["submission"]["why"]
+    return ok, f"missing={r['missing']}"
+
+
+@case("EVD-空文件须报为完整性问题", "0 字节文件不能作为证据，但容易被忽略")
+def j3():
+    d = _mk_evidence(dict(FULL_PACK, **{"空文件.md": ""}))
+    code, out = _run_evidence(d, "--json")
+    r = json.loads(out)
+    return any(x["kind"] == "空文件" for x in r["problems"]), f"problems={r['problems']}"
+
+
+@case("EVD-同时符合多类的文件不得被静默归为单一类",
+      "旧实现只取第一个匹配 —— 另一类的清点会静默漏掉，用户以为那类证据缺失")
+def j4():
+    d = _mk_evidence(dict(FULL_PACK, **{"导师反馈-v2-送检记录.md": "反馈 + 送检"}))
+    code, out = _run_evidence(d, "--json")
+    r = json.loads(out)
+    amb = [x for x in r["ambiguous"] if "导师反馈-v2-送检记录.md" in x["path"]]
+    return (len(amb) == 1 and len(amb[0]["categories"]) >= 2
+            and r["categories"]["communication"]["count"] >= 2), \
+        f"ambiguous={r['ambiguous']}"
+
+
+@case("EVD-须生成含 SHA-256 的存证清单", "哈希是用来证明「我提交的就是这一版」的")
+def j5():
+    d = _mk_evidence(FULL_PACK)
+    _run_evidence(d)
+    mf = d / "作者证明包" / "MANIFEST.md"
+    mj = d / "作者证明包" / "manifest.json"
+    if not (mf.exists() and mj.exists()):
+        return False, "未生成清单"
+    r = json.loads(mj.read_text(encoding="utf-8"))
+    hashed = [f for f in r["files"] if f.get("sha256")]
+    md = mf.read_text(encoding="utf-8")
+    # **不能只断言"SHA-256"这个词出现过** —— 把哈希列清空后表头还在，
+    # 突变测试就是这么发现旧断言是空转的（EVD-存证清单不再写 SHA-256 未被抓到）。
+    # 要断言的是：清单里真的出现了每个文件的 sha256 前 16 位。
+    missing = [f["path"] for f in hashed if f["sha256"][:16] not in md]
+    return (len(hashed) == len(r["files"]) and not missing), \
+        f"含哈希文件 {len(hashed)}/{len(r['files'])}；清单缺失哈希的 {missing[:3]}"
+
+
+@case("EVD-目录不存在须退出 2 且不 traceback", "输入错误与崩溃要区分")
+def j6():
+    d = Path(tempfile.mkdtemp(prefix="aigc-evd-"))
+    p = subprocess.run([sys.executable, str(ROOT / "scripts" / "evidence.py"), "不存在的目录"],
+                       cwd=d, capture_output=True, text=True)
+    return p.returncode == 2 and "Traceback" not in p.stderr, f"exit={p.returncode}"
+
+
+@case("EVD-输出不得评价文本是否 AI 生成或预测申诉结果",
+      "本脚本的职责是清点证据，越界表态会给出虚假保证")
+def j7():
+    d = _mk_evidence(FULL_PACK)
+    code, out = _run_evidence(d)
+    banned = ["一定能申诉成功", "保证通过", "必然撤销", "检测结果会降低"]
+    hit = [b for b in banned if b in out]
+    return not hit, f"越界表述={hit}"
+
+
+@case("EVD-送检记录类存在时不得建议反复送检",
+      "反复送检本身是行为痕迹，skill 明令禁止")
+def j8():
+    d = _mk_evidence(FULL_PACK)
+    code, out = _run_evidence(d)
+    return "再送检一次" not in out and "多送检" not in out, "含反复送检建议"
+
+
 def main() -> int:
     fails = []
     print(f"aigc-risk-audit 回归 —— {len(CASES)} 条用例")

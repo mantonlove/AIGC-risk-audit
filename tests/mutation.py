@@ -25,7 +25,9 @@ SKILL = pathlib.Path(__file__).resolve().parent.parent
 SUITE_TIMEOUT = 300
 
 # 每个突变针对的文件（相对 skill 根）。汇总时按文件分组统计。
-TARGETS = {"anchor": "scripts/anchor.py", "aggregate": "scripts/aggregate.py"}
+TARGETS = {"anchor": "scripts/anchor.py",
+           "aggregate": "scripts/aggregate.py",
+           "evidence": "scripts/evidence.py"}
 
 MUTATIONS: list[tuple[str, str, str]] = [
     # ---- 模式失效（每个模式都要有守卫）----
@@ -92,6 +94,23 @@ MUTATIONS: list[tuple[str, str, str]] = [
     ("AGG-空输入返回 NaN 而非 0.0",
      '    if not scores:\n        return 0.0',
      '    if not scores:\n        return float("nan")'),
+
+    # ---- 自证存证（evidence.py）----
+    ("EVD-空文件不再报为完整性问题",
+     '        if size == 0:\n            problems.append({"kind": "空文件", "path": rel,',
+     '        if False:\n            problems.append({"kind": "空文件", "path": rel,'),
+    ("EVD-多标签退化为只取第一个匹配",
+     '    return [c["id"] for c in CATEGORIES\n            if ext in c["exts"] and re.search(c["globs"], base, re.I)]',
+     '    hit = [c["id"] for c in CATEGORIES\n           if ext in c["exts"] and re.search(c["globs"], base, re.I)]\n    return hit[:1]'),
+    ("EVD-存证清单不再写 SHA-256",
+     '        h = (f["sha256"] or "")[:16] or "（过大未计算）"',
+     '        h = ""'),
+    ("EVD-缺失类别不再点名",
+     '        "missing": [c["name"] for c in CATEGORIES if not by_cat[c["id"]]],',
+     '        "missing": [],'),
+    ("EVD-目录不存在时不再退出 2",
+     '    if not os.path.isdir(args.root):\n        print(f"错误：目录不存在：{args.root}", file=sys.stderr)\n        return 2',
+     '    if False:\n        return 2'),
 ]
 
 
@@ -110,7 +129,17 @@ TARGET_FOR: dict[str, str] = {}
 
 
 def _target_of(label: str) -> str:
-    return "aggregate" if label.startswith("AGG-") else "anchor"
+    """按标签前缀分派目标文件。
+
+    前缀不是装饰 —— 它决定这条突变改的是**哪个文件**。
+    忘了注册新前缀的后果是：锚点在错误的文件里找不到（报"锚点 0 处"），
+    而 runner 会把它记成"未覆盖"，看起来像缺用例，实际是分派错了。
+    """
+    if label.startswith("AGG-"):
+        return "aggregate"
+    if label.startswith("EVD-"):
+        return "evidence"
+    return "anchor"
 
 
 def main() -> int:

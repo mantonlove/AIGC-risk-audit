@@ -14,6 +14,7 @@ description: 当用户说「降AIGC」「降AI率」「降低AIGC检测率」「
 | **打分** | `python3 scripts/score_text.py 论文.txt` | 用本地检测器给出逐段 AIGC 分数，看哪里最可疑 |
 | **改写降分** | `python3 scripts/reduce_aigc.py 论文.txt --target 0.2` | **核心**：检测器引导的迭代改写，把分数压到目标以下 |
 | 写作质量审查 | `python3 scripts/diagnose.py 论文.txt` | 定位空话套话、模板化结构、缺失的作者立场 |
+| **自证存证** | `python3 scripts/evidence.py 材料目录` | 清点五类作者证据、做完整性检查、生成含 SHA-256 的存证清单 |
 | **事实锚定** | `python3 scripts/anchor.py 论文.txt` | 列出待补真实信息的位置，给出**具体性密度**前后对比（实测唯一在均值上有效的编辑） |
 | 平台口径对齐 | `python3 scripts/score_text.py 论文.txt` | 默认 `char_weighted` 聚合，直接给出与知网 `疑似AIGC占全文比` 同构的**可疑字数占比**（片段划分仍不等价） |
 
@@ -54,7 +55,11 @@ description: 当用户说「降AIGC」「降AI率」「降低AIGC检测率」「
 3. **"用两三个检测器投票"不是独立证据。** `d_cmj` 与 `d_zhv3` 的文档级相关是
    **+0.928**（近冗余），它们与 `d_hello` 只有 +0.417 / +0.337。
 
-4. **效果的一半来自"补信息"，另一半只是"多了一句"。**
+4. **组合（先补信息、再加自我设限）在最强的检测器上效果最大，但在另两个上反噬。**
+   实测 `d_hello` 检出率 **49% → 17%**（McNemar p = 3.6e−12），
+   而 `d_cmj` 78% → **90%**、`d_zhv3` 82% → **91%**；
+   且 `d_cmj` 上 120 篇里有 **80 篇**分数升高。**均值好不代表对你这一篇好。**
+5. **效果的一半来自"补信息"，另一半只是"多了一句"。**
    加了一个**对照条件 D**：追加一句长度相当（222 字）但零具体信息的通用句。
    在 `d_hello` 上 D 降 0.092、A 降 0.191 —— A 约为 D 的 2.1 倍；
    在另两个检测器上两者都接近零。所以"补具体信息"确实优于"随便加一句"，
@@ -199,7 +204,22 @@ python3 scripts/style_profile.py --calibrate 该领域人类文本.jsonl
 
 ### 阶段 4：自证存证
 
-读 `references/appeal.md`，指导用户建立证据链：写作过程文件、素材来源、修改版本历史、与导师的沟通记录。**这一步在送检前做，不要等被判高再补。**
+**先跑脚本，别只读文档**：
+
+```bash
+python3 scripts/evidence.py ~/论文材料          # 清点 + 完整性检查 + 生成存证清单
+python3 scripts/evidence.py ~/论文材料 --json   # 机器可读
+```
+
+它会做三件 `references/appeal.md` 只讲了、没做检查的事：
+
+1. **分类清点**五类证据（过程文件 / 版本历史 / 沟通记录 / 素材来源 / 送检记录），
+   缺哪类直接点名并说明为什么需要；
+2. **完整性检查**：空文件、时间线是否自洽（过程文件比稿子还新 = 事后补材料）；
+3. **生成含 SHA-256 的存证清单**（`MANIFEST.md` + `manifest.json`）——
+   哈希的用途是证明"我提交的就是这一版"。
+
+**这一步在送检前做，不要等被判高再补。** 事后补材料的痕迹（时间线倒挂）本身就是问题。
 
 ### 阶段 5：送检与结果解读
 
@@ -238,6 +258,8 @@ python3 scripts/style_profile.py --calibrate 该领域人类文本.jsonl
 - `references/appeal.md` —— 自证存证与误判复核流程
 - `scripts/diagnose.py` —— 本地启发式体检器（**无第三方 Python 依赖**；处理 `.docx/.doc` 需要 macOS `textutil` 或 `pandoc`。不联网）
 - `scripts/style_profile.py` —— 文风规整度指标（阈值经实测标定，含组合判据与 `--calibrate`）
+- `scripts/evidence.py` —— 自证存证清点器（五类证据、完整性检查、SHA-256 清单）
+- `scripts/aggregate.py` —— 文档级聚合口径（`max`/`mean`/`char_weighted`，与平台 `aigcRatio` 同构）
 - `scripts/aigc_trigger_hook.py` —— UserPromptSubmit 触发钩子；已注册到 `~/.codex/hooks.json` 与 `~/.claude/settings.json`，DSH 经 hooks 桥接插件生效。改动触发词后必须重跑 `evals/test-prompts.md` 的回归
 - `evals/test-prompts.md` —— 触发与行为回归测试（含 15 条自动用例）
 - `evals/test-prompts.md` —— 触发与行为回归测试
