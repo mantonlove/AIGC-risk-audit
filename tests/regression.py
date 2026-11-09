@@ -618,6 +618,30 @@ def k2():
     return all(checks.values()), f"边界表述检查={checks}"
 
 
+@case("EVD-12 --json 与 --out 同时给出必须报错，不能静默不写文件",
+      "只打印不写盘，用户看到 exit 0 会以为存证包已生成（真实踩过）")
+def evd12():
+    d = Path(tempfile.mkdtemp(prefix="aigc-evd12-"))
+    (d / "a.md").write_text("材料\n", encoding="utf-8")
+    pkg = d / "pkg"
+    proc = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "evidence.py"), str(d),
+         "--out", str(pkg), "--json"],
+        capture_output=True, text=True)
+    rc_bad = proc.returncode == 2
+    said = "不写文件" in (proc.stderr or "") or "互斥" in (proc.stderr or "")
+    no_dir = not pkg.exists()
+    # 去掉 --json 应正常落盘
+    proc2 = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "evidence.py"), str(d),
+         "--out", str(pkg)],
+        capture_output=True, text=True)
+    wrote = (pkg / "manifest.json").is_file() and (pkg / "MANIFEST.md").is_file()
+    ok = rc_bad and said and no_dir and proc2.returncode == 0 and wrote
+    return ok, (f"rc(--json+--out)={proc.returncode} 说明了原因={said} "
+                f"没建目录={no_dir} 正常落盘={wrote}")
+
+
 def main() -> int:
     fails = []
     print(f"aigc-risk-audit 回归 —— {len(CASES)} 条用例")

@@ -167,9 +167,18 @@ def main() -> int:
         description="自证存证：清点作者证据、做完整性检查、生成可核对清单",
         formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
     ap.add_argument("root", help="你的论文材料目录")
-    ap.add_argument("--out", default=None, help="输出目录（默认 <root>/作者证明包）")
-    ap.add_argument("--json", action="store_true", help="只输出 JSON 到 stdout")
+    ap.add_argument("--out", default=None,
+                    help="输出目录（默认 <root>/作者证明包）；与 --json 互斥")
+    ap.add_argument("--json", action="store_true",
+                    help="只输出 JSON 到 stdout，**不写任何文件**（与 --out 互斥）")
     args = ap.parse_args()
+
+    if args.json and args.out:
+        print("错误：--json 只打印、不写文件，与 --out 同时给出会让人以为存证包已生成。\n"
+              "      要生成文件就去掉 --json（默认会写 manifest.json 与 MANIFEST.md）；\n"
+              "      要拿机器可读结果就重定向 stdout：evidence.py ROOT --json > out.json",
+              file=sys.stderr)
+        return 2
 
     if not os.path.isdir(args.root):
         print(f"错误：目录不存在：{args.root}", file=sys.stderr)

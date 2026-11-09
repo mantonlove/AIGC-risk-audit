@@ -80,8 +80,8 @@ MUTATIONS: list[tuple[str, str, str]] = [
      '    return float(sum(s * wi for s, wi in zip(sc, w)) / tw)',
      '    return float(sum(sc) / len(sc))'),
     ("AGG-权重被用反（短段反而权重大）",
-     '    w = [max(float(x), 0.0) for x in weights[:n]]',
-     '    w = [1.0 / max(float(x), 1.0) for x in weights[:n]]'),
+     '    w = [max(float(x), 0.0) for x in weights]',
+     '    w = [1.0 / max(float(x), 1.0) for x in weights]'),
     ("AGG-疑似字数占比：边界改为严格大于",
      '    flagged = sum(wi for s, wi in zip(sc, w) if s >= threshold)',
      '    flagged = sum(wi for s, wi in zip(sc, w) if s > threshold)'),
@@ -111,6 +111,9 @@ MUTATIONS: list[tuple[str, str, str]] = [
     ("EVD-目录不存在时不再退出 2",
      '    if not os.path.isdir(args.root):\n        print(f"错误：目录不存在：{args.root}", file=sys.stderr)\n        return 2',
      '    if False:\n        return 2'),
+    ("EVD---json 与 --out 同时给出时不再报错",
+     '    if args.json and args.out:',
+     '    if False:'),
 ]
 
 
