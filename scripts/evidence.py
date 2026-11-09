@@ -15,14 +15,14 @@
    沟通记录 / 素材来源 / 送检记录）。
 2. **完整性检查**（可执行，不是提示）：
    - 每类证据"有 / 没有"；
-   - 时间线自洽：素材日期 ≤ 成稿日期 ≤ 送检日期（倒挂说明证据链有问题）；
-   - 空文件、坏文件、明显不是证据的文件（如 `.DS_Store`）；
-   - 引用到的本地路径是否存在（如文稿里写的 `资料/访谈01.md`）。
-3. **生成可核对的存证清单**：`MANIFEST.md`（人读）+ `manifest.json`（含每个文件的
-   SHA-256）。哈希的作用是：你送检之后可以证明"我当时提交的就是这一版"。
+   - 文件修改时间的顺序线索（不能据此判断真实写作或送检时间）；
+   - 标出空文件，忽略 `.DS_Store` 等系统文件。
+3. **生成可核对的存证清单**：`MANIFEST.md`（人读）+ `manifest.json`（含可计算文件的
+   SHA-256）。哈希用于日后核对文件是否与清单所记录的版本一致；
+   对应送检版本还需平台回执等独立记录。
 
 ⚠️ 本脚本**不判断**你的文本是不是 AI 写的，也**不预测**任何申诉结果。
-    它只回答"证据齐不齐、自不自洽"。
+   它只清点材料，并指出值得人工核查的线索。
 """
 
 import argparse
@@ -40,8 +40,8 @@ CATEGORIES = [
     {
         "id": "process",
         "name": "过程文件",
-        "why": "最能证明「是你写的」的一类：提纲、便签、草稿、实验记录。"
-               "它证明的是**逐步形成**，而不是一次生成。",
+        "why": "提纲、便签、草稿、实验记录可帮助说明写作过程，"
+               "还需结合内容与来源人工核查。",
         "globs": (r"提纲|大纲|outline|草稿|draft|笔记|note|便签|记录|log|"
                   r"实验|数据|访谈|转录|transcript|问卷"),
         "exts": (".md", ".txt", ".docx", ".doc", ".rtf", ".org", ".tex"),
@@ -49,7 +49,7 @@ CATEGORIES = [
     {
         "id": "versions",
         "name": "版本与修订记录",
-        "why": "证明文本是**迭代**出来的。至少有 3 个时间点、且内容确有差异。",
+        "why": "不同版本可帮助核查文本如何变化；须确认内容确有差异。",
         "globs": (r"v\d|版本|修订|revision|final|初稿|二稿|三稿|改"),
         "exts": (".md", ".txt", ".docx", ".doc", ".pdf", ".tex"),
     },
@@ -63,14 +63,14 @@ CATEGORIES = [
     {
         "id": "sources",
         "name": "素材来源",
-        "why": "你读的文献、抄的原文、访谈对象、原始数据。证明论据有出处。",
+        "why": "文献、访谈和原始数据可帮助核对论据来源。",
         "globs": (r"文献|参考|reference|引文|书目|资料|素材|原始|数据|raw|source"),
         "exts": (".md", ".txt", ".pdf", ".csv", ".xlsx", ".json", ".bib", ".ris"),
     },
     {
         "id": "submission",
         "name": "送检记录",
-        "why": "每次送检的时间、平台、版本。**证明你没有反复送检拟合分数**。",
+        "why": "记录送检平台、时间及对应版本，便于与平台回执核对。",
         "globs": (r"送检|检测报告|查重|aigc|report|结果"),
         "exts": (".md", ".txt", ".pdf", ".png", ".jpg", ".json"),
     },
@@ -93,9 +93,12 @@ def sha256_of(p: str, cap: int = 64 << 20) -> str | None:
         return None
 
 
-def walk(root: str):
+def walk(root: str, excluded_dir: str | None = None):
+    """遍历材料，跳过本次生成的证明包，避免清单收录自身。"""
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in IGNORE_DIRS and not d.startswith(".")]
+        dirnames[:] = [d for d in dirnames
+                       if d not in IGNORE_DIRS and not d.startswith(".")
+                       and os.path.realpath(os.path.join(dirpath, d)) != excluded_dir]
         for fn in filenames:
             if fn in IGNORE_NAMES or fn.startswith("."):
                 continue
@@ -115,6 +118,50 @@ def classify(path: str) -> list[str]:
             if ext in c["exts"] and re.search(c["globs"], base, re.I)]
 
 
+def check_mtime_order(by_cat: dict) -> tuple[bool | None, list[dict]]:
+    """给出可复核的文件修改时间顺序；mtime 不是写作或送检时间。"""
+    # 同一文件即使被多标签归类，也不能同时充当两个阶段的独立时间点。
+    stage_ids = ("sources", "versions", "submission")
+    stages = tuple((name, [f for f in by_cat[stage_id]
+                           if not any(other in f["categories"]
+                                      for other in stage_ids if other != stage_id)])
+                   for name, stage_id in (("素材", "sources"),
+                                          ("文稿版本", "versions"),
+                                          ("送检记录", "submission")))
+    checks = []
+    for (before_name, before_files), (after_name, after_files) in zip(stages, stages[1:]):
+        if not before_files or not after_files:
+            missing = [name for name, group in ((before_name, before_files),
+                                                 (after_name, after_files)) if not group]
+            checks.append({
+                "before_stage": before_name,
+                "after_stage": after_name,
+                "before_path": None,
+                "after_path": None,
+                "before_mtime": None,
+                "after_mtime": None,
+                "status": "insufficient_stages",
+                "reason": "缺少可独立比较的阶段文件：" + "、".join(missing),
+            })
+            continue
+        before = min(before_files, key=lambda f: f["mtime"])
+        after = min(after_files, key=lambda f: f["mtime"])
+        inverted = before["mtime"] > after["mtime"] + 60
+        checks.append({
+            "before_stage": before_name,
+            "after_stage": after_name,
+            "before_path": before["path"],
+            "after_path": after["path"],
+            "before_mtime": before["mtime"],
+            "after_mtime": after["mtime"],
+            "status": "needs_review" if inverted else "mtime_order_ok",
+        })
+    if any(x["status"] == "needs_review" for x in checks):
+        return False, checks
+    return (True if all(x["status"] == "mtime_order_ok" for x in checks)
+            else None), checks
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description="自证存证：清点作者证据、做完整性检查、生成可核对清单",
@@ -128,14 +175,20 @@ def main() -> int:
         print(f"错误：目录不存在：{args.root}", file=sys.stderr)
         return 2
 
+    root = os.path.realpath(args.root)
+    out_dir = os.path.realpath(args.out or os.path.join(root, "作者证明包"))
+    if out_dir == root:
+        print("错误：输出目录不能与材料目录相同", file=sys.stderr)
+        return 2
+
     files, problems = [], []
-    for p in walk(args.root):
+    for p in walk(root, out_dir):
         try:
             size = os.path.getsize(p)
             mtime = os.path.getmtime(p)
         except OSError:
             continue
-        rel = os.path.relpath(p, args.root)
+        rel = os.path.relpath(p, root)
         if size == 0:
             problems.append({"kind": "空文件", "path": rel,
                              "detail": "0 字节的文件不能作为证据"})
@@ -149,17 +202,10 @@ def main() -> int:
     unclassified = [f for f in files if not f["categories"]]
     ambiguous = [f for f in files if len(f["categories"]) > 1]
 
-    # 时间线自洽：最早素材 ≤ 最新成稿（倒挂说明"素材比稿子还新"，通常是摆拍式补材料）
-    timeline_ok = True
-    newest_process = max((f["mtime"] for f in by_cat["process"]), default=None)
-    if newest_process and files:
-        # 用"最晚修改的任何文件"当送检近似
-        latest = max(f["mtime"] for f in files)
-        if newest_process > latest + 60:
-            timeline_ok = False
+    timeline_ok, timeline_checks = check_mtime_order(by_cat)
 
     report = {
-        "root": os.path.abspath(args.root),
+        "root": root,
         "generated_at": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
         "files_total": len(files),
         "bytes_total": sum(f["size"] for f in files),
@@ -174,6 +220,8 @@ def main() -> int:
         "ambiguous": [{"path": f["path"], "categories": f["categories"]} for f in ambiguous],
         "problems": problems,
         "timeline_consistent": timeline_ok,
+        "timeline_checks": timeline_checks,
+        "timeline_note": "仅比较文件修改时间（mtime）；复制、下载、同步或再次编辑都可能改变它。顺序正常不能证明写作真实性，顺序倒挂也不能证明材料是事后补造的。",
         "files": [{k: v for k, v in f.items() if k != "abs"} for f in files],
     }
 
@@ -193,13 +241,13 @@ def main() -> int:
             print(f"        为什么需要：{c['why']}")
     print()
     if report["missing"]:
-        print(f"**缺失 {len(report['missing'])} 类**：{', '.join(report['missing'])}")
-        print("  → 缺的这几类在申诉时通常是决定性的，建议先补。")
+        print(f"**未找到 {len(report['missing'])} 类候选文件**：{', '.join(report['missing'])}")
+        print("  → 请核对是否确有相关材料；没有的不要事后伪造。")
     else:
-        print("五类证据齐全。")
+        print("五类均有候选文件；还需人工核对内容与来源。")
     if report["unclassified_count"]:
         print(f"\n未归类文件 {report['unclassified_count']} 个"
-              "（文件名不含可识别关键词或扩展名不符，可手动改名后重跑）")
+              "（文件名或扩展名未匹配；请人工核对类型与内容）")
     if report["ambiguous"]:
         print(f"\n同时符合多类的文件 {len(report['ambiguous'])} 个"
               "（已计入每一类，不重复计字数）：")
@@ -209,11 +257,16 @@ def main() -> int:
         print(f"\n完整性问题 {len(problems)} 处：")
         for x in problems[:10]:
             print(f"  [{x['kind']}] {x['path']} —— {x['detail']}")
-    if not timeline_ok:
-        print("\n⚠️ 时间线异常：有「过程文件」比其它文件都新，"
-              "这通常意味着材料是事后补的。申诉时对方可能问这个。")
+    if timeline_ok is False:
+        print("\n⚠️ 文件修改时间有倒序线索，请对照原始版本、平台回执核查：")
+        for check in timeline_checks:
+            if check["status"] == "needs_review":
+                print(f"  {check['before_stage']} `{check['before_path']}` 晚于"
+                      f" {check['after_stage']} `{check['after_path']}`")
+    elif timeline_ok is None:
+        print("\n文件修改时间不足以检查完整的素材→文稿→送检顺序。")
+    print("文件修改时间不能证明写作真实性；复制、下载、同步或再次编辑都可能改变它。")
 
-    out_dir = args.out or os.path.join(args.root, "作者证明包")
     os.makedirs(out_dir, exist_ok=True)
     mp = os.path.join(out_dir, "manifest.json")
     with open(mp, "w", encoding="utf-8") as f:
@@ -238,8 +291,18 @@ def main() -> int:
     lines += ["## 二、完整性问题", ""]
     lines += ([f"- [{x['kind']}] `{x['path']}` —— {x['detail']}" for x in problems]
               or ["无。"])
-    lines += ["", "## 三、文件哈希（用于证明提交版本）", "",
-              "送检后若要证明「我提交的就是这一版」，把本清单与哈希一起保存。", "",
+    lines += ["", "## 三、文件修改时间线索", "",
+              report["timeline_note"], ""]
+    for check in timeline_checks:
+        if check["status"] == "insufficient_stages":
+            lines.append(f"- {check['before_stage']} → {check['after_stage']}："
+                         f"无法比较（{check['reason']}）")
+        else:
+            lines.append(f"- {check['before_stage']} `{check['before_path']}` → "
+                         f"{check['after_stage']} `{check['after_path']}`："
+                         f"{check['status']}")
+    lines += ["", "## 四、文件哈希（用于核对文件版本）", "",
+              "哈希可用于核对文件是否与本清单一致；确认送检版本还需平台回执等独立记录。", "",
               "| 文件 | 字节 | SHA-256（前 16 位） |", "|---|---:|---|"]
     for f in report["files"]:
         h = (f["sha256"] or "")[:16] or "（过大未计算）"

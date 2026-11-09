@@ -36,29 +36,43 @@ VENV_CANDIDATES = [
     os.environ.get("AIGC_VENV_PYTHON"),
     os.path.expanduser("~/.venvs/aigc/bin/python"),
 ]
+REQUIRED_MODULES = ("torch", "transformers", "numpy")
 
 
 def _venv_python(bench):
-    """找一个真的存在、且**真的装得下 torch** 的解释器。"""
+    """找一个存在且具备推理依赖的解释器。"""
+    import subprocess
     cands = [os.path.join(bench, ".venv", "bin", "python")] + VENV_CANDIDATES
+    probe = ("import importlib.util,sys; "
+             "sys.exit(0 if all(importlib.util.find_spec(m) "
+             f"for m in {REQUIRED_MODULES!r}) else 1)")
     for vpy in cands:
-        if vpy and os.path.exists(vpy):
+        if not vpy or not os.path.isfile(vpy):
+            continue
+        try:
+            check = subprocess.run([vpy, "-c", probe], capture_output=True,
+                                   timeout=10, check=False)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if check.returncode == 0:
             return vpy
     return None
 
 
 def ensure_venv(bench):
-    """若当前解释器没有 torch，则用一个装了 torch 的解释器重新执行。
+    """若当前解释器缺少推理依赖，则切换到完整环境重新执行。
 
     依赖（torch/transformers）不在 skill 目录里，用户不该操心这件事。
-    只在"当前解释器缺 torch"时切换，避免无限递归。
+    只在当前环境缺依赖时切换，避免无限递归。
     """
     import importlib.util
-    if importlib.util.find_spec("torch") is not None:
+    missing = [name for name in REQUIRED_MODULES
+               if importlib.util.find_spec(name) is None]
+    if not missing:
         return
     if os.environ.get("_AIGC_VENV_REEXEC") == "1":
         raise SystemExit(
-            "已切换过解释器，但仍找不到 torch。\n"
+            f"已切换过解释器，但仍缺少依赖：{', '.join(missing)}。\n"
             "请显式指定：export AIGC_VENV_PYTHON=/path/to/bin/python\n"
             "或手动安装：python3 -m venv ~/.venvs/aigc && "
             "~/.venvs/aigc/bin/pip install torch transformers numpy")
@@ -66,7 +80,7 @@ def ensure_venv(bench):
     if vpy is None:
         tried = [os.path.join(bench, ".venv", "bin", "python")] + [c for c in VENV_CANDIDATES if c]
         raise SystemExit(
-            "缺少依赖：当前 Python 没有 torch，也没有找到可用的解释器。\n"
+            f"缺少依赖：当前 Python 没有 {', '.join(missing)}，也没有找到可用的解释器。\n"
             "已尝试：\n" + "".join(f"  - {t}\n" for t in tried) +
             "创建方式：\n"
             "  python3 -m venv ~/.venvs/aigc\n"
@@ -95,19 +109,23 @@ def ensure_importable(bench):
 
 
 def detector_paths(bench, names):
-    out = []
+    """解析全部请求的检测器；缺一个就停止，避免无意改变测量配置。"""
+    out, missing = [], []
     for n in names:
         d = DETECTOR_DIRS.get(n, n)
         p = d if os.path.isabs(d) else os.path.join(bench, "data/models", d)
         if os.path.isdir(p):
             out.append(p)
         else:
-            print(f"[warn] 检测器缺失，跳过：{n}（{p}）", file=sys.stderr)
-            print("       可用 scripts/fetch_models.py 重新下载", file=sys.stderr)
-    if not out:
+            missing.append((n, p))
+    if missing:
         raise SystemExit(
-            "没有任何可用检测器。请先下载模型：\n"
+            "请求的检测器不完整，已停止评分（不会静默改用更少模型）：\n" +
+            "".join(f"  - {n}: {p}\n" for n, p in missing) +
+            "可用 scripts/fetch_models.py 重新下载：\n"
             f"  cd {bench} && .venv/bin/python harness/fetch_models.py")
+    if not out:
+        raise SystemExit("未指定检测器；请至少提供一个可用模型。")
     return out
 
 
@@ -128,7 +146,9 @@ def read_text(path):
         raise SystemExit(f"文件不存在：{path}")
     ext = os.path.splitext(path)[1].lower()
     if ext in (".txt", ".md", ".markdown"):
-        return open(path, encoding="utf-8", errors="replace").read()
+        # 保留原文件的 CRLF/LF；自动候选按字符 offset 回填未选片段。
+        with open(path, encoding="utf-8", errors="replace", newline="") as fh:
+            return fh.read()
     if ext in (".docx", ".doc"):
         for cmd in (["textutil", "-convert", "txt", "-stdout", path],
                     ["pandoc", "-t", "plain", path]):

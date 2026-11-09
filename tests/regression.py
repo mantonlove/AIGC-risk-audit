@@ -286,7 +286,7 @@ def g3():
 
 
 # --------------------------------------------------------------------------- #
-#  I. 聚合口径（aggregate.py）—— 唯一直接对应平台报告字段的计算
+#  I. 聚合口径（aggregate.py）—— 仅用于本地分数汇总
 # --------------------------------------------------------------------------- #
 
 def _agg():
@@ -296,7 +296,7 @@ def _agg():
 
 
 @case("AGG-字数加权须让长段主导", "段落等权会让 20 字过渡段与 200 字论证段同权，"
-      "而平台的分子分母都按字数算")
+      "本地汉字数加权可显示这类权重差异，但不能还原平台字段")
 def i1():
     ag = _agg()
     v = ag.aggregate([0.9, 0.1], [200, 20], "char_weighted")
@@ -312,14 +312,14 @@ def i2():
     return ok, f"{a}"
 
 
-@case("AGG-疑似字数占比须与手算一致", "这是与平台 aigcRatio 同构的字段，算错就是误导")
+@case("AGG-本地标记字数占比须与手算一致", "本地占比算错会误导用户；算对也不能预测平台字段")
 def i3():
     ag = _agg()
     f, t, r = ag.flagged_char_ratio([0.9, 0.4, 0.6], [100, 200, 300], 0.5)
     return (f, t) == (400, 600) and abs(r - 400 / 600) < 1e-9, f"({f},{t},{r:.4f})"
 
 
-@case("AGG-判定线边界：恰好 0.5 须算疑似", "知网原文是『>=0.5 即为疑似』，边界必须含等号")
+@case("AGG-本地判定线边界：恰好 0.5 计入", "这里的 0.5 只是本地默认标记线，不是已知平台阈值")
 def i4():
     ag = _agg()
     f, _, _ = ag.flagged_char_ratio([0.5], [100], 0.5)
@@ -333,6 +333,13 @@ def i5():
     return abs(v - 0.5) < 1e-9, f"{v}"
 
 
+@case("AGG-全零汉字权重的本地标记占比应为 0", "纯 ASCII 文本不能除零或伪造有汉字被标记")
+def i5b():
+    ag = _agg()
+    f, t, r = ag.flagged_char_ratio([0.8, 0.2], [0, 0], 0.5)
+    return (f, t, r) == (0, 0, 0.0), f"({f}, {t}, {r})"
+
+
 @case("AGG-空输入返回 0.0 而非 NaN", "NaN 会让下游所有比较为假，静默失效")
 def i6():
     ag = _agg()
@@ -340,15 +347,17 @@ def i6():
     return v == 0.0, f"{v!r}"
 
 
-@case("AGG-长度不匹配须截断而不是错配", "分数与权重错位会让分数落到错误的段上")
+@case("AGG-长度不匹配须明确报错", "截断会静默丢失未对齐的段落分数或权重")
 def i7():
     ag = _agg()
-    # 分数 2 个、权重 1 个 → 只算第一段
-    v = ag.aggregate([0.9, 0.1], [50], "char_weighted")
-    return abs(v - 0.9) < 1e-9, f"{v}"
+    try:
+        ag.aggregate([0.9, 0.1], [50], "char_weighted")
+        return False, "长度不匹配却未报错"
+    except ValueError as exc:
+        return "长度" in str(exc), str(exc)
 
 
-@case("AGG-未知口径须报错，不得静默取默认", "静默默认会让你以为用的是平台口径")
+@case("AGG-未知口径须报错，不得静默取默认", "静默默认会让本地报告的口径与用户选择不一致")
 def i8():
     ag = _agg()
     try:
@@ -449,19 +458,21 @@ def h7():
     return code == 0 and "AIGC" not in out, f"exit={code} out={out[:120]!r}"
 
 
-@case("CLI-reduce_aigc --help 须点明「LLM 改写实测不降分」并指向 anchor.py",
-      "引擎的机制与实测结论相冲突，帮助文本里不写清就是误导用户花算力")
+@case("CLI-reduce_aigc --help 须说明本地改写结果的不稳定性并指向 anchor.py",
+      "帮助文本必须说明本地实验范围，不能把一次实验说成通用降分规律")
 def h8():
     code, out = _run("reduce_aigc.py", ["--help"])
-    ok = code == 0 and "不降低检出率" in out and "anchor.py" in out
-    return ok, f"exit={code} 含冲突声明={'不降低检出率' in out} 指向 anchor={'anchor.py' in out}"
+    boundary = "未见稳定降低检出率" in out and "不能预测这些平台" in out
+    ok = code == 0 and boundary and "anchor.py" in out
+    return ok, f"exit={code} 含实验/平台边界={boundary} 指向 anchor={'anchor.py' in out}"
 
 
 @case("CLI-score_text --help 须说明三种聚合口径与平台字段的关系",
-      "char_weighted 是唯一对齐平台 aigcRatio 的口径，用户必须知道默认是它")
+      "字数加权只是本地摘要，不能据此换算商业平台字段")
 def h9():
     code, out = _run("score_text.py", ["--help"])
-    ok = code == 0 and "char_weighted" in out and "字数加权" in out
+    ok = (code == 0 and "char_weighted" in out and "字数加权" in out
+          and "不能预测那些平台" in out)
     return ok, f"exit={code}"
 
 
@@ -496,7 +507,7 @@ FULL_PACK = {
 }
 
 
-@case("EVD-五类齐全时须报齐全", "这是用户唯一能看到的「我准备得够不够」的判据")
+@case("EVD-五类候选文件须可识别", "文件名分类只是清点线索，不能判断作者材料是否足够")
 def j1():
     d = _mk_evidence(FULL_PACK)
     code, out = _run_evidence(d, "--json")
@@ -533,7 +544,7 @@ def j4():
         f"ambiguous={r['ambiguous']}"
 
 
-@case("EVD-须生成含 SHA-256 的存证清单", "哈希是用来证明「我提交的就是这一版」的")
+@case("EVD-须生成含 SHA-256 的存证清单", "哈希用于核对清单所记录的文件版本，不单独证明送检版本")
 def j5():
     d = _mk_evidence(FULL_PACK)
     _run_evidence(d)
@@ -587,8 +598,10 @@ def k1():
     banned = ["把文本的 AIGC 检出分数压下来", "保证过检", "确保通过检测",
               "稳定过检", "必过知网"]
     hit = [b for b in banned if b in fm]
-    ok = not hit and "不承诺" in fm
-    return ok, f"越界表述={hit} 含不承诺={'不承诺' in fm}"
+    # 验证明确的能力边界，不把某一个否定词当作唯一合格表述。
+    boundary = "不预测商业平台分数或承诺达标" in fm
+    ok = not hit and boundary
+    return ok, f"越界表述={hit} 含平台预测/达标边界={boundary}"
 
 
 @case("DOC-边界声明须同时出现在 SKILL.md 与实测文档里",
@@ -596,8 +609,13 @@ def k1():
 def k2():
     sk = (ROOT / "SKILL.md").read_text(encoding="utf-8")
     ee = (ROOT / "references" / "edit-effects.md").read_text(encoding="utf-8")
-    return ("不承诺" in sk and "没有任何校准关系" in ee
-            and "不等价" in ee), "边界表述缺失"
+    checks = {
+        "技能不预测平台": "不能据此推断商业平台效果" in sk,
+        "实验无商业平台直接测量": "没有知网、学习通、PaperPass" in ee,
+        "规则操作不等于作者修订": "A 不等于作者补充真实证据" in ee,
+        "实验不导出平台策略": "不能据此选择对商业平台有效的改写策略" in ee,
+    }
+    return all(checks.values()), f"边界表述检查={checks}"
 
 
 def main() -> int:

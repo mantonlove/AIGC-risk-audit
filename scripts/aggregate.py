@@ -4,14 +4,12 @@
 
 为什么单独成模块
 ----------------
-聚合口径是**唯一直接对应平台报告字段**的计算：
-知网一手字段是 `疑似 AIGC 占全文比 = 疑似 AI 生成文字字数 / 文本总字数`
-（见 `references/platforms.md` §1.5）——**按字数加权**。
+本模块只实现本地段落分数的数学汇总。所用自然段/非空行划分、汉字权重和
+本地模型输出均不能还原知网、学习通或 PaperPass 报告字段。
 把它埋在 `score_text.py` 的 detector 循环里，就只能靠端到端跑模型来测，
 而模型调用又慢又难在回归里造边界。抽出来之后每个口径都能被单独断言。
 
-⚠️ 边界：平台的"片段"是**自动划分**的，与自然段不同（知网自述）。
-本模块把自然段当片段，**不等价**，只能作代理。
+⚠️ 边界：片段和权重由调用方传入；结果只反映该调用方采用的本地口径。
 """
 
 import sys
@@ -20,7 +18,7 @@ AGG_CHOICES = ("max", "mean", "char_weighted")
 
 
 def _normalize(scores, weights):
-    """把 (分数, 权重) 对齐并按最短截断；权重取非负。
+    """核对 (分数, 权重) 一一对应；权重取非负。
 
     抽成函数是为了**只留一处**权重处理逻辑 —— 突变测试发现
     `aggregate` 与 `flagged_char_ratio` 里各有一份相同的权重代码，
@@ -28,9 +26,10 @@ def _normalize(scores, weights):
     （锚点数必须恰好为 1，否则改的不是以为的那一处）。
     重复的保护逻辑本身就是缺陷：改一处、漏一处，行为会不一致。
     """
-    n = min(len(scores), len(weights))
-    w = [max(float(x), 0.0) for x in weights[:n]]
-    return scores[:n], w
+    if len(scores) != len(weights):
+        raise ValueError("分数与权重长度不一致，拒绝静默丢弃片段")
+    w = [max(float(x), 0.0) for x in weights]
+    return scores, w
 
 
 def aggregate(scores, weights=None, agg: str = "char_weighted") -> float:
@@ -38,10 +37,11 @@ def aggregate(scores, weights=None, agg: str = "char_weighted") -> float:
 
     - `max`           最可疑段落（保守；不受段落划分影响）
     - `mean`          段落等权平均（诊断用；一个 20 字过渡段与 200 字论证段同权）
-    - `char_weighted` **按字数加权**（与平台 aigcRatio 的口径同构）
+    - `char_weighted` **按传入权重加权**（通常使用本地汉字数）
 
     空输入返回 0.0（不是 NaN）：调用方要能直接比较与累加。
-    长度与权重长度不一致时按最短截断，避免静默错配。
+    长度与权重长度不一致时报错，避免静默漏掉片段。
+    所有权重为 0 时退回段落等权；这只是计算兜底，不是有意义的字数加权结果。
     """
     if agg not in AGG_CHOICES:
         raise ValueError(f"未知聚合口径 {agg!r}，可选 {AGG_CHOICES}")
@@ -62,11 +62,11 @@ def aggregate(scores, weights=None, agg: str = "char_weighted") -> float:
 
 
 def flagged_char_ratio(scores, weights, threshold: float = 0.5) -> tuple[int, int, float]:
-    """平台口径的"疑似字数占比"。
+    """按调用方权重计算达到本地阈值的片段占比。
 
-    返回 (疑似字数, 总字数, 占比)。判定线默认 0.5 —— 那是知网对**片段**的线
-    （"AIGC 值>=0.5，即为疑似 AI 生成"），**不是**文档级达标线
-    （后者由学校定，观测到 30% / 40%）。
+    返回 (本地标记权重, 总权重, 占比)。默认 0.5 只是本地演示标记线，
+    不代表任何商业平台或学校的判定标准。
+    总权重为 0 时返回 (0, 0, 0.0)；第三项仅是避免除零的哨兵值。
     """
     sc, w = _normalize(scores, weights)
     total = sum(w)

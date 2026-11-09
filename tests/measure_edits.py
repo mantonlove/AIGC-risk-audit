@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""复现「三类编辑对检出分数的影响」实验（配对设计，无需 LLM）。
+"""重跑 A/B/C 编辑评分，或汇总 A/B/C/D/E 的已存原始分数。
 
     python3 tests/measure_edits.py --bench ~/CC/projects/dsh开发/aigc-bench \\
         --python ~/.venvs/aigc/bin/python --limit 120 --out out/edit_effects.json
+    python3 tests/measure_edits.py --summarize-saved
 
 为什么需要这个脚本
 ------------------
@@ -11,24 +12,25 @@ skill 里的每一条改写优先级的**方向**都必须能追溯到测量，�
 本脚本测量的是：
 
     在同一篇论文上（人类摘要 vs 其 AI 版本，同题配对），
-    施加三类规则化编辑后，三个开源中文检测器的**文档级分数变化**。
+    施加规则化编辑后，三个开源中文检测器的**文档级分数变化**。
 
 设计要点（都是为了让结论可辩护）
 --------------------------------
 1. **配对**：每个 base 同时有人类版与 AI 版，编辑只施加在 AI 版上，比较**配对差**。
-2. **字数对齐**：三类编辑补入的字数接近，避免用"长度差"解释分数差。
-3. **不改事实**：事实锚定只把**人类版里已有的**具体信息搬过去，
-   不生成任何新信息。这是为了测"信息密度"这一维，而不是测"编数据"。
-4. **主指标是检出率**（固定 FPR 下的二分类），不是平均分 —— 平台是阈值判定。
-5. **报告符号一致性**：同一编辑在三个检测器上方向是否一致。
-   这一步决定了"能不能把这条编辑当成策略推广"。
+2. **A 的具体操作**：从人类版抽取数字/术语，尾附到 AI 版；没有验证语义衔接。
+3. **观察范围**：只测本地开源检测器，且 A/B/C 的本脚本重跑入口不包含 D/E。
+4. **阈值限制**：人类样本内 p95 只供描述，不能作为留出集 FPR。
 
-输出：out/edit_effects.json（原始分数）+ 终端报告。
+输出：out/edit_effects.json（A/B/C 原始分数）+ 终端报告。
+--summarize-saved 只读 bench/out2/edit_probe_ctrl.json 与 edit_probe_combined.json，
+核对共有分数一致性后重算 A/B/C/D/E 均值变化和逐篇升分数量；不声称重建
+历史 60/60 留出拆分或商业平台结果。
 """
 from __future__ import annotations
 
-import argparse, json, os, re, subprocess, sys
+import argparse, json, math, os, re, subprocess, sys
 from pathlib import Path
+from statistics import mean
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_BENCH = os.path.expanduser("~/CC/projects/dsh开发/aigc-bench")
@@ -65,6 +67,7 @@ def edit_fact(ai, hu):
 def edit_meta(ai, hu):
     return ai.rstrip()+"需要说明的是，上述机制本文未能逐一验证，结论受样本与口径限制。"
 def edit_rhythm(ai, hu):
+    # 历史 C 条件只删除部分连接词；下面的拆分与原样拼接不改变句子边界。
     t=ai
     for c in CONNECTORS: t=t.replace(c+"，","").replace(c+"、","")
     return "".join(s.strip() for s in re.split(r"(?<=[。！？；])", t) if s.strip())
@@ -115,13 +118,66 @@ print("写到", OUT)
 '''
 
 
+def summarize_saved(bench: Path) -> int:
+    ctrl_path = bench / "out2" / "edit_probe_ctrl.json"
+    combined_path = bench / "out2" / "edit_probe_combined.json"
+    try:
+        ctrl = json.loads(ctrl_path.read_text(encoding="utf-8"))
+        combined = json.loads(combined_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        print(f"读取历史分数失败：{exc}", file=sys.stderr)
+        return 2
+    if ctrl.get("n_pairs") != combined.get("n_pairs") or not combined.get("n_pairs"):
+        print("历史分数的配对数量不一致或为空", file=sys.stderr)
+        return 2
+    n = combined["n_pairs"]
+    conditions = ("H", "AI", "A_fact", "B_meta", "C_rhythm", "D_append_ctrl", "E_combined")
+    try:
+        if set(ctrl["scores"]) != set(combined["scores"]):
+            raise ValueError("两份历史文件的检测器集合不一致")
+        for detector, groups in combined["scores"].items():
+            if set(groups) != set(conditions):
+                raise ValueError(f"{detector} 的组合条件集合不完整或含多余项")
+            if set(ctrl["scores"][detector]) != set(conditions) - {"E_combined"}:
+                raise ValueError(f"{detector} 的对照条件集合不完整或含多余项")
+            for condition in conditions:
+                values = groups[condition]
+                if len(values) != n or any(not math.isfinite(x) for x in values):
+                    raise ValueError(f"{detector}/{condition} 缺失或含非有限分数")
+            for condition, values in ctrl["scores"][detector].items():
+                if values != groups[condition]:
+                    raise ValueError(f"两份历史文件的 {detector}/{condition} 不一致")
+    except (KeyError, ValueError, TypeError) as exc:
+        print(f"历史分数校验失败：{exc}", file=sys.stderr)
+        return 2
+    print(f"历史原始分数：n={n}；对照与组合文件的共有条件逐项一致")
+    print(f"主文件：{combined_path}")
+    print("检测器       条件             均值       Δ均值    逐篇升分")
+    for detector, groups in combined["scores"].items():
+        base = groups["AI"]
+        for condition in conditions:
+            scores = groups[condition]
+            delta = [s - b for s, b in zip(scores, base)]
+            if condition == "H":
+                print(f"{detector:<12} {condition:<16} {mean(scores):.4f}    {'—':>7}    —")
+            else:
+                print(f"{detector:<12} {condition:<16} {mean(scores):.4f}    {mean(delta):+.4f}    {sum(x > 0 for x in delta)}/{n}")
+    print("说明：这是已存分数的描述统计；未复现历史留出拆分，亦非商业平台结果。")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="复现编辑效应实验")
     ap.add_argument("--bench", default=DEFAULT_BENCH)
     ap.add_argument("--python", default=DEFAULT_PY, help="带 torch 的解释器")
     ap.add_argument("--limit", type=int, default=120)
     ap.add_argument("--out", default=str(HERE.parent / "out" / "edit_effects.json"))
+    ap.add_argument("--summarize-saved", action="store_true",
+                    help="只读并汇总 bench/out2 中 A/B/C/D/E 的历史原始分数")
     a = ap.parse_args()
+
+    if a.summarize_saved:
+        return summarize_saved(Path(a.bench))
 
     if not Path(a.bench).is_dir():
         print(f"错误：回测工程不存在 {a.bench}\n"
@@ -161,13 +217,13 @@ def main() -> int:
             dd = np.array(S[dn][c]) - base
             lo, hi = boot(dd)
             print(f"{dn:<9}{c:<10}{dd.mean():>+9.4f}  [{lo:+.4f}, {hi:+.4f}]{'':>4}{(dd<0).mean():>9.1%}")
-    print("\n5% FPR 口径（阈值 = 人类组 p95）的检出率：")
+    print("\n样本内 p95 阈值下的描述性检出率（不是留出集 5% FPR）：")
     for dn in S:
         hu = np.array(S[dn]["H"]); thr = float(np.percentile(hu, 95))
         row = [f"{c}={(np.array(S[dn][c])>=thr).mean():.0%}"
                for c in ("H", "AI", "A_fact", "B_meta", "C_rhythm")]
         print(f"  {dn:<9} thr={thr:.4f}  " + "  ".join(row))
-    print("\n三检测器符号一致率（决定能否把该编辑当策略推广）：")
+    print("\n三检测器符号一致率（仅描述这批文本）：")
     ks = list(S)
     for c in ("A_fact", "B_meta", "C_rhythm"):
         agree = sum(1 for k in range(d["n_pairs"])
