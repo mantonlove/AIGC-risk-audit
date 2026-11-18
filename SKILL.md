@@ -17,7 +17,7 @@ description: 审查中文学术文本的 AIGC 检测争议、空泛论证与作�
 | 本地检测器评分 | `python3 scripts/score_text.py 论文.txt` | 仅是本机开源模型的分数。段落、阈值、分词、训练数据与商业平台没有校准关系；读 `references/platforms.md`。 |
 | 具体性核查 | `python3 scripts/anchor.py 论文.txt` | 标出待补的出处、数字或方法；作者须据真实材料确认，脚本不会生成事实。 |
 | 作者证据清点 | `python3 scripts/evidence.py 材料目录` | 生成本地文件清单和哈希，供版本核对；不能单凭哈希或修改时间证明创作和送检时间。读 `references/appeal.md`。 |
-| 可选候选改写 | `python3 scripts/reduce_aigc.py 论文.txt --out 候选稿.txt` | 将输出当作待审草稿。即便本机分数下降，也须逐句核对数字、引文、否定、因果和结论；不能据此推断商业平台效果。 |
+| 可选候选改写 | `python3 scripts/reduce_aigc.py 论文.txt --out 候选稿.txt`；纯规则版 `python3 scripts/reduce_rules.py 论文.txt --out 候选稿.txt`（不需要本地生成模型） | 将输出当作待审草稿。即便本机分数下降，也须逐句核对数字、引文、否定、因果和结论；不能据此推断商业平台效果。分数下降本身不证明文本更像人写，见 `references/direction-control.md`。 |
 
 `score_text.py` 的默认 `char_weighted` 是本地段落分数的字数加权平均；它另报按本地阈值标记的字数占比。两项都不是平台报告中的“疑似 AIGC 占全文比”。即使字数占比的算式看似相同，本地模型分数、阈值、分段和文本覆盖范围均不同，**不得换算或预测平台百分比**。`--threshold 0.5` 只是本地显示用默认值，不是知网或其他平台的阈值。
 
@@ -48,5 +48,7 @@ description: 审查中文学术文本的 AIGC 检测争议、空泛论证与作�
 - `references/platforms.md`：商业平台公开材料的证据等级与结果口径。涉及知网、学习通、PaperPass、维普时必读。
 - `references/platform-methods-research.md`：专利、供应商论文、产品披露与独立实测的逐平台核查；研究检测原理或规划平台验证时必读，不能把专利等同现网算法。
 - `references/fingerprints.md`、`references/rewrite-rules.md`：逐段写作审查与可核查的修订建议。
+- `references/operator-effects.md`：确定性算子（拆句/删连接词/等义压缩）在真实摘要上的剂量-反应与跨阈率。需要讨论「哪种算子真有效」时必读。
+- `references/direction-control.md`：正向／反向词表与随机替换三组对照。**它说明本机分数随扰动下降、不随「更像人写」下降**，任何「降分」结论都要先过这一关。
 - `references/appeal.md`：作者过程材料和复核路径。
 - `tests/measure_edits.py`：A/B/C 实验入口；D/E 历史分数位置见 `references/edit-effects.md`。
