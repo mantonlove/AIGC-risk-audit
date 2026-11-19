@@ -14,12 +14,12 @@ description: 审查中文学术文本的 AIGC 检测争议、空泛论证与作�
 | 需求 | 入口 | 如何解释结果 |
 |---|---|---|
 | 逐段定位 | `python3 scripts/diagnose.py 论文.txt`；需要全文文风统计时再用 `scripts/style_profile.py` | 启发式写作线索，不是 AIGC 判决。短文本和跨领域文本尤其谨慎；详见 `references/fingerprints.md`。 |
-| 本地检测器评分 | `python3 scripts/score_text.py 论文.txt` | 仅是本机开源模型的分数。段落、阈值、分词、训练数据与商业平台没有校准关系；读 `references/platforms.md`。 |
+| 本地检测器评分（需另装模型） | `python3 scripts/score_text.py 论文.txt` | 仅是本机开源模型的分数。段落、阈值、分词、训练数据与商业平台没有校准关系；读 `references/platforms.md`。 |
 | 具体性核查 | `python3 scripts/anchor.py 论文.txt` | 标出待补的出处、数字或方法；作者须据真实材料确认，脚本不会生成事实。同时报分句缺主语率（按人类摘要分位分档），但该量与 AIGC 无关联，只用于自查行文。 |
 | 作者证据清点 | `python3 scripts/evidence.py 材料目录` | 生成本地文件清单和哈希，供版本核对；不能单凭哈希或修改时间证明创作和送检时间。读 `references/appeal.md`。 |
-| 可选候选改写 | `python3 scripts/reduce_aigc.py 论文.txt --out 候选稿.txt`；纯规则版 `python3 scripts/reduce_rules.py 论文.txt --out 候选稿.txt`（不需要本地生成模型） | 将输出当作待审草稿。即便本机分数下降，也须逐句核对数字、引文、否定、因果和结论；不能据此推断商业平台效果。分数下降本身不证明文本更像人写，见 `references/direction-control.md`。 |
+| 可选候选改写 | 不装模型：`python3 scripts/reduce_rules.py 论文.txt --no-score --out 候选稿.txt`（纯规则，无需权重）。有本地检测器时：`python3 scripts/reduce_rules.py 论文.txt --out 候选稿.txt`（逐段打分、不降就回退）。`scripts/reduce_aigc.py` 需另装本地生成模型，且其实测无稳定降分效果 | 将输出当作待审草稿。即便本机分数下降，也须逐句核对数字、引文、否定、因果和结论；不能据此推断商业平台效果。分数下降本身不证明文本更像人写，见 `references/direction-control.md`。 |
 
-`score_text.py` 的默认 `char_weighted` 是本地段落分数的字数加权平均；它另报按本地阈值标记的字数占比。两项都不是平台报告中的“疑似 AIGC 占全文比”。即使字数占比的算式看似相同，本地模型分数、阈值、分段和文本覆盖范围均不同，**不得换算或预测平台百分比**。`--threshold 0.5` 只是本地显示用默认值，不是知网或其他平台的阈值。
+除「本地检测器评分」与「可选候选改写」的打分模式外，其余入口都只用标准库，不加载任何模型；模型只在被调用时于进程内加载，不常驻。`score_text.py` 的默认 `char_weighted` 是本地段落分数的字数加权平均；它另报按本地阈值标记的字数占比。两项都不是平台报告中的“疑似 AIGC 占全文比”。即使字数占比的算式看似相同，本地模型分数、阈值、分段和文本覆盖范围均不同，**不得换算或预测平台百分比**。`--threshold 0.5` 只是本地显示用默认值，不是知网或其他平台的阈值。
 
 ## 证据边界
 

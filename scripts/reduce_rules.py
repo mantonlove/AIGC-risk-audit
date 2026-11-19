@@ -43,6 +43,18 @@ d_zhv3=0.938）：
     python3 scripts/reduce_rules.py 论文.txt --threshold 0.5 --split-min 12 \
         --no-lexicon --max-rounds 3
 
+    # 不装模型、也不要 aigc-bench：按固定顺序施加一次算子，不择优不回退
+    python3 scripts/reduce_rules.py 论文.txt --no-score --out 论文_候选.txt
+
+两种模式
+--------
+- **带打分（默认）**：逐段先打分，只对超阈段落施算子，每步重打分、不降就回退。
+  需要三个本地检测器权重与本机推理环境；没有模型会直接退出并说明原因。
+- **`--no-score`**：不加载检测器，按 split→delconn→lexicon 顺序各施加一次，
+  改的是全部正文段落，没有"是否变差"的判据，也不会回退。纯标准库可跑，
+  不需要模型，也不需要 aigc-bench 目录。适合"我只想把冗词和长句压一压，
+  不打算测分"的场景。
+
 边界（必须知道）
 ----------------
 - 这里的分数是**本地开源检测器未经校准的 AI 类得分**，不是知网/维普/PaperPass
@@ -95,7 +107,14 @@ NO_SPLIT_BEFORE = ("以", "而", "并", "且", "或", "及", "与", "但", "却"
                    "很", "较", "均", "皆", "亦", "故", "若", "虽", "如", "否则",
                    "从而", "进而", "以便", "以免", "以及", "能", "可", "会", "应",
                    "须", "需", "将", "已", "未", "有", "没", "不", "用", "按", "依",
-                   "据", "同")
+                   "据", "同",
+                   # 动宾式开头：断开会得到无主语残句（实测"…出版了很多书籍。涉及经史子集"）
+                   "涉及", "包含", "涵盖", "呈现", "构成", "形成", "达到", "覆盖",
+                   "具有", "拥有", "存在", "取决", "依赖于", "属于", "位于", "用于",
+                   "旨在", "称为", "简称", "来源", "起于", "源于", "见于", "载于",
+                   # 评价/情态式开头，同样缺主语
+                   "值得", "有助于", "有利于", "便于", "足以", "难以", "易于",
+                   "能够", "应当", "应该", "必须", "需要")
 
 
 def _quote_mask(text):
@@ -168,6 +187,24 @@ def op_delconn(text, rng=None):
     return re.sub(r"[，,]{2,}", "，", text).strip("，") or text
 
 
+def line_spans(text):
+    """非空行的 (start, end, 原文)。与 harness/corpus.py 的口径一致，但不需要 bench 目录。"""
+    return [(m.start(), m.end(), m.group())
+            for m in re.finditer(r"[^\r\n]+", text or "") if m.group().strip()]
+
+
+def n_cjk(text):
+    return len(re.findall(r"[\u4e00-\u9fff]", text or ""))
+
+
+def changed_chars(a, b):
+    """粗估改动字符数：用 difflib 的等长对齐长度差，只作剂量参考。"""
+    import difflib
+    sm = difflib.SequenceMatcher(None, a, b, autojunk=False)
+    return sum(max(i2 - i1, j2 - j1) for tag, i1, i2, j1, j2 in sm.get_opcodes()
+               if tag != "equal")
+
+
 def op_lexicon(text, ratio=0.04, rng=None, level="safe"):
     """等义压缩：把冗长的学术套话换成同义的简洁说法。
 
@@ -180,11 +217,105 @@ def op_lexicon(text, ratio=0.04, rng=None, level="safe"):
     level="safe" 只做等义压缩，不改文体，适合论文正文；
     level="plain" 允许口语化（方法→办法、能力→本事），可能进一步降分但文体会受损。
     """
-    out, _n, _c = _lx.apply(text, ratio=ratio, rng=rng, level=level)
+    out, _n, _c = _lx.apply(text, ratio=ratio, level=level)
     return out
 
 
 # ---------------------------------------------------------------- 主流程
+
+def _build_ladder(args):
+    ladder = []
+    if args.split_prob > 0:
+        ladder.append(("split", lambda t, r: op_split(
+            t, min_clause=args.split_min, prob=args.split_prob, rng=r)))
+    if not args.no_delconn:
+        ladder.append(("delconn", op_delconn))
+    if not args.no_lexicon:
+        ladder.append(("lexicon", lambda t, r: op_lexicon(
+            t, ratio=args.lexicon_ratio, rng=r, level=args.lexicon_level)))
+    return ladder
+
+
+def _run_no_score(args, text, spans, paras):
+    """无模型路径：按固定顺序把算子各施加一次，不做择优、不回退。
+
+    代价是没有"这一步是否变差"的判据，所以它改的是全部正文段落而非超阈段。
+    收益是完全不依赖检测器与 aigc-bench 目录，`python3` 直接可跑。
+    """
+    ladder = _build_ladder(args)
+    records, out_paras = [], []
+    for idx, p in enumerate(paras, 1):
+        cur, applied = p, []
+        for name, fn in ladder:
+            cand = fn(cur, random.Random(args.seed + idx))
+            if cand != cur:
+                applied.append(name)
+                cur = cand
+        out_paras.append(cur)
+        n = max(n_cjk(p), 1)
+        ch = changed_chars(p, cur)
+        records.append({"index": idx, "chars": n_cjk(p), "changed_chars": ch,
+                        "changed_ratio": round(ch / n, 4), "applied": applied})
+        if not args.json and applied:
+            print(f"  段{idx:3d} ({n_cjk(p):4d}字) 改动 {ch:3d} 字 "
+                  f"({ch / n * 100:4.1f}%)  {'→'.join(applied)}")
+
+    result_lines, k = [], 0
+    for s, e, raw in line_spans(text):
+        if raw.strip():
+            result_lines.append(out_paras[k])
+            k += 1
+        else:
+            result_lines.append(raw)
+    result = "\n".join(result_lines)
+    if text.endswith(("\n", "\r")):
+        result += "\n"
+
+    touched = [r for r in records if r["applied"]]
+    total_changed = sum(r["changed_chars"] for r in records)
+    summary = {
+        "mode": "no-score", "file": os.path.basename(args.path),
+        "chars": n_cjk(text), "n_para": len(paras), "n_touched": len(touched),
+        "changed_chars": total_changed,
+        "changed_ratio": round(total_changed / max(n_cjk(text), 1), 4),
+        "detectors": [], "agg": None, "threshold": None,
+        "params": {
+            "split_min": args.split_min, "split_prob": args.split_prob,
+            "lexicon_ratio": args.lexicon_ratio,
+            "delconn": not args.no_delconn, "lexicon": not args.no_lexicon,
+            "seed": args.seed,
+        },
+        "paragraphs": records,
+    }
+
+    if not args.json:
+        print(f"\n触及段落 {len(touched)}/{len(paras)}；"
+              f"改动 {total_changed}/{summary['chars']} 字 "
+              f"({summary['changed_ratio'] * 100:.2f}%)")
+        print("本次未加载检测器，因此没有分数、也没有逐段回退；"
+              "改动按已验证的算子顺序一次性施加。")
+        print("提醒：标点级改写会改变行文节奏，必须逐段通读；"
+              "本地分数（若另行测量）也不能预测知网、维普、PaperPass 的百分比。")
+
+    if args.report:
+        os.makedirs(os.path.dirname(os.path.abspath(args.report)) or ".", exist_ok=True)
+        with open(args.report, "w", encoding="utf-8") as fh:
+            json.dump(summary, fh, ensure_ascii=False, indent=2)
+        if not args.json:
+            print(f"报告 -> {args.report}")
+
+    if args.json:
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.out and not args.dry_run:
+        if os.path.abspath(args.out) == os.path.abspath(args.path):
+            raise SystemExit("输出路径不能与输入文件相同，以免覆盖原稿。")
+        with open(args.out, "w", encoding="utf-8") as fh:
+            fh.write(result)
+        print(f"候选稿 -> {args.out}")
+    return 0
+
 
 def main():
     ap = argparse.ArgumentParser(
@@ -211,20 +342,26 @@ def main():
     ap.add_argument("--no-delconn", action="store_true", help="关闭连接词删除")
     ap.add_argument("--lexicon-ratio", type=float, default=0.04,
                     help="词面替换目标改动字符占比（默认 0.04）")
+    ap.add_argument("--no-score", action="store_true",
+                    help="不加载检测器：按固定顺序施加一次算子，不做降分筛选，"
+                         "也不需要本机模型或 aigc-bench 目录")
     ap.add_argument("--max-rounds", type=int, default=3, help="每段最多尝试轮数")
     ap.add_argument("--seed", type=int, default=13)
     ap.add_argument("--json", action="store_true", help="把报告打到 stdout")
     args = ap.parse_args()
 
-    bench = _bench.find_bench()
-    _bench.ensure_venv(bench)
-    _bench.ensure_importable(bench)
-    from corpus import line_spans, n_chars
-    from detectors import Detector
-
     text = _bench.read_text(args.path)
     spans = [(s, e, raw) for s, e, raw in line_spans(text) if raw.strip()]
     paras = [raw.strip() for _, _, raw in spans]
+
+    if args.no_score:
+        return _run_no_score(args, text, spans, paras)
+
+    bench = _bench.find_bench()
+    _bench.ensure_venv(bench)
+    _bench.ensure_importable(bench)
+    from corpus import line_spans as _ls, n_chars  # noqa: F401
+    from detectors import Detector
     paths = _bench.detector_paths(bench, args.detectors)
     if len(paths) != len(args.detectors):
         raise SystemExit("请求的检测器路径不齐，已停止评分；请补齐模型后重试。")

@@ -698,6 +698,81 @@ def evd12():
                 f"没建目录={no_dir} 正常落盘={wrote}")
 
 
+# --------------------------------------------------------------------------- #
+#  RR. 无模型改写（--no-score）：不装检测器也必须能改，且不能假装测过
+# --------------------------------------------------------------------------- #
+
+REDUCE = ROOT / "scripts" / "reduce_rules.py"
+
+
+def run_reduce(text: str, extra: list[str] | None = None, bench: str | None = ""):
+    """在临时目录跑 reduce_rules.py；bench="" 表示把 AIGC_BENCH_HOME 指向不存在路径。"""
+    import os
+    d = Path(tempfile.mkdtemp(prefix="aigc-rr-"))
+    (d / "t.txt").write_text(text, encoding="utf-8")
+    env = dict(os.environ)
+    if bench == "":
+        env["AIGC_BENCH_HOME"] = str(d / "no-such-bench")
+    cmd = [sys.executable, str(REDUCE), "t.txt"] + (extra or [])
+    proc = subprocess.run(cmd, cwd=d, env=env, capture_output=True, text=True)
+    out = d / "out.txt"
+    return proc, (out.read_text(encoding="utf-8") if out.exists() else None), d
+
+
+SAMPLE = ("味经书院是由民间资本筹建、管理并得到官方认可的一个教学机构，"
+          "其教学强调经世致用，以“实学”为主。"
+          "该书院教书与刊书相结合，出版了大量传统经史书籍，涉及经史子集多个门类。"
+          "研究表明，这种模式具有重要的现实意义，值得我们深入研究。")
+
+
+@case("RR-没有 aigc-bench 与模型时也必须能改",
+      "用户明确不要那三个模型；这条路径断了，skill 的改写入口就等于不存在")
+def rr1():
+    proc, out, _ = run_reduce(SAMPLE, ["--no-score", "--out", "out.txt"])
+    ok = proc.returncode == 0 and out is not None and out.strip() != SAMPLE.strip()
+    return ok, f"rc={proc.returncode} 有输出={out is not None} 改了={out != SAMPLE}"
+
+
+@case("RR-拆句守卫不得造出无主语残句",
+      "实测「出版了很多书籍。涉及经史子集」「…现实意义。值得我们深入研究」都是切出来的残句")
+def rr2():
+    proc, out, _ = run_reduce(SAMPLE, ["--no-score", "--out", "out.txt"])
+    bad = [w for w in ("。涉及", "。值得", "。有助于", "。有利于", "。包含了")
+           if w in (out or "")]
+    return proc.returncode == 0 and not bad, f"残句={bad}"
+
+
+@case("RR-不得覆盖输入文件",
+      "改写工具覆盖原稿是不可恢复的错误")
+def rr3():
+    proc, out, d = run_reduce(SAMPLE, ["--no-score", "--out", "t.txt"])
+    keep = (d / "t.txt").read_text(encoding="utf-8") == SAMPLE
+    return proc.returncode != 0 and keep, f"rc={proc.returncode} 原稿完好={keep}"
+
+
+@case("RR-报告必须标 mode=no-score 且不含任何分数",
+      "没打分却输出 before/after，等于让用户以为测过")
+def rr4():
+    proc, out, d = run_reduce(
+        SAMPLE, ["--no-score", "--out", "out.txt", "--report", "r.json", "--json"])
+    rep = d / "r.json"
+    data = json.loads(rep.read_text(encoding="utf-8")) if rep.exists() else {}
+    paras = data.get("paragraphs") or [{}]
+    ok = (data.get("mode") == "no-score"
+          and not data.get("detectors")
+          and all("before" not in p and "delta" not in p for p in paras))
+    return ok, f"mode={data.get('mode')} det={data.get('detectors')} 首段键={list(paras[0])}"
+
+
+@case("RR-输出必须说明未加载检测器、且不能预测平台百分比",
+      "无模型模式最容易滑向「改完就降了」的暗示")
+def rr5():
+    proc, _, _ = run_reduce(SAMPLE, ["--no-score", "--out", "out.txt"])
+    t = proc.stdout + proc.stderr
+    ok = ("未加载检测器" in t) and ("不能预测" in t)
+    return ok, f"stdout 尾部={t.strip().splitlines()[-2:] if t.strip() else []}"
+
+
 def main() -> int:
     fails = []
     print(f"aigc-risk-audit 回归 —— {len(CASES)} 条用例")
