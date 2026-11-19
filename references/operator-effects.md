@@ -190,3 +190,8 @@ HF_HUB_OFFLINE=1 /Users/manton/.venvs/aigc/bin/python harness/guarded_ops.py --c
 
 详细对照见 `direction-control.md`。结论是**扩词表不是杠杆**，降分主要由改动量与
 不通顺程度决定；保留词表的理由是它本来就是压缩冗词，不是因为它能降分。
+
+同一条判据也否掉了"长短句交替"：把句长 CV 抬高 0.018 只得到 d_cmj +0.001、
+d_zhv3 −0.007，反向把句长拉齐反而稳定降分 −0.026/−0.044。实验与语法样例见
+`direction-control.md` 的「句长离散度」一节，算子留在 `aigc-bench/harness/burst_ops.py`，
+不并入 `scripts/reduce_rules.py`。
