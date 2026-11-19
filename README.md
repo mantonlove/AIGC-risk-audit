@@ -1,5 +1,7 @@
 # AIGC risk audit · 中文论文 AIGC 检测争议与写作审查
 
+**简体中文** ｜ [English](README.en.md) ｜ ![tests](https://github.com/mantonlove/AIGC-risk-audit/actions/workflows/tests.yml/badge.svg)
+
 一套**审计**工具，不是"降 AI 率"改写器。
 
 它做四件事：判断一处高分为何可疑、指出文里哪些论断缺依据、把作者手上的过程材料整理成可提交的清单、以及在只有公开资料时说明某个平台的字段到底是怎么算的。
@@ -80,8 +82,9 @@ references/              平台机制、实测基线、算子效应、方向对�
 scripts/                 12 个脚本，多数纯标准库
 tests/                   regression.py 70 条；mutation.py 突变测试
 evals/                   触发与提示词用例
+.github/workflows/       每次 push 跑回归（3.11–3.13，Ubuntu + macOS）
 ```
 
 ## 许可
 
-个人研究与写作审查工具，按原样提供。引用其中的实测数字时请连同 `references/` 里的口径与边界一起引用。
+MIT，见 [LICENSE](LICENSE)。引用其中的实测数字时请连同 `references/` 里的口径与边界一起引用。
