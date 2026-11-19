@@ -15,7 +15,7 @@ description: 审查中文学术文本的 AIGC 检测争议、空泛论证与作�
 |---|---|---|
 | 逐段定位 | `python3 scripts/diagnose.py 论文.txt`；需要全文文风统计时再用 `scripts/style_profile.py` | 启发式写作线索，不是 AIGC 判决。短文本和跨领域文本尤其谨慎；详见 `references/fingerprints.md`。 |
 | 本地检测器评分 | `python3 scripts/score_text.py 论文.txt` | 仅是本机开源模型的分数。段落、阈值、分词、训练数据与商业平台没有校准关系；读 `references/platforms.md`。 |
-| 具体性核查 | `python3 scripts/anchor.py 论文.txt` | 标出待补的出处、数字或方法；作者须据真实材料确认，脚本不会生成事实。 |
+| 具体性核查 | `python3 scripts/anchor.py 论文.txt` | 标出待补的出处、数字或方法；作者须据真实材料确认，脚本不会生成事实。同时报分句缺主语率（按人类摘要分位分档），但该量与 AIGC 无关联，只用于自查行文。 |
 | 作者证据清点 | `python3 scripts/evidence.py 材料目录` | 生成本地文件清单和哈希，供版本核对；不能单凭哈希或修改时间证明创作和送检时间。读 `references/appeal.md`。 |
 | 可选候选改写 | `python3 scripts/reduce_aigc.py 论文.txt --out 候选稿.txt`；纯规则版 `python3 scripts/reduce_rules.py 论文.txt --out 候选稿.txt`（不需要本地生成模型） | 将输出当作待审草稿。即便本机分数下降，也须逐句核对数字、引文、否定、因果和结论；不能据此推断商业平台效果。分数下降本身不证明文本更像人写，见 `references/direction-control.md`。 |
 

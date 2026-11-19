@@ -252,6 +252,62 @@ def c7():
 
 
 # --------------------------------------------------------------------------- #
+#  SL. 分句缺主语（"每句话讲清楚谁在做什么"里可测的那一半）
+# --------------------------------------------------------------------------- #
+
+@case("SL-拆句造出的无主语残句必须被抓到",
+      "这是 op_split 实测里真实产生的句子；不抓，用户就以为改写是干净的")
+def sl1():
+    _, p = run_anchor("味经书院不仅培养了一批英才，更成为新思想、新文化的传播基地。"
+                      "这里诞生了严复的第一个刊本。推进了西北地区维新运动。")
+    q = [h["quote"] for h in p.get("subjectless_hits", [])]
+    return any("推进了" in x for x in q), f"命中={q}"
+
+
+@case("SL-定中结构不得误报", "「提出的方法」是定语不是谓语，报了就是噪声")
+def sl2():
+    _, p = run_anchor("提出的方法在三个数据集上均有效。")
+    return p["before"]["subjectless_hard"] == 0, f"硬性命中={p['before']['subjectless_hard']}"
+
+
+@case("SL-名动兼类词不得误报", "「研究结果表明」的「研究」是名词，不能当谓语")
+def sl3():
+    _, p = run_anchor("研究结果表明，该算法在全部 27 个样本上都收敛。")
+    return p["before"]["subjectless_hard"] == 0, f"硬性命中={p['before']['subjectless_hard']}"
+
+
+@case("SL-状语打头的承接句记为 soft，不计入速率",
+      "「通过引入X，实现了Y」是中文可接受的无主句；混进主指标会推高误报")
+def sl4():
+    _, p = run_anchor("通过引入松弛变量，实现了约束的可分离。")
+    b = p["before"]
+    return b["subjectless"] >= 1 and b["subjectless_hard"] == 0, \
+        f"总{b['subjectless']} 硬{b['subjectless_hard']}"
+
+
+@case("SL-速率须以分句数为分母，且输出带人类基线分档",
+      "按字数做分母会把长句多、短句少的文本算低；分档必须能看出来源")
+def sl5():
+    _, p = run_anchor("该书院教书与刊书相结合，出版了大量经史书籍。"
+                       "推进了西北地区维新运动。")
+    b = p["before"]
+    ok = (b["clauses"] > 0 and 0 < b["subjectless_rate"] <= 100
+          and ("p75" in b["subjectless_band"] or b["subjectless_band"].startswith("高")))
+    return ok, f"分句{b['clauses']} 速率{b['subjectless_rate']} 档{b['subjectless_band']}"
+
+
+@case("SL-输出必须声明该指标不区分人类与 AI",
+      "实测人类 5.63 / AI 5.02 每百分句，无差异 —— 不写这句，用户会当 AIGC 信号用")
+def sl6():
+    d = Path(tempfile.mkdtemp(prefix="aigc-reg-"))
+    (d / "t.txt").write_text("推进了西北地区维新运动。", encoding="utf-8")
+    p = subprocess.run([sys.executable, str(ANCHOR), "t.txt"], cwd=d,
+                       capture_output=True, text=True)
+    blob = p.stdout + p.stderr
+    return ("不能当作 AIGC 信号" in blob) and ("5.63" in blob), "缺边界声明"
+
+
+# --------------------------------------------------------------------------- #
 #  D. 反模式守卫：工具不得建议禁止手段
 # --------------------------------------------------------------------------- #
 

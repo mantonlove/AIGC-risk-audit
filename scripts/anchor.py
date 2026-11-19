@@ -18,6 +18,10 @@ AIGC 检测分数或商业平台结果。
     python3 scripts/anchor.py 论文.txt                    # 列出待锚定位置
     python3 scripts/anchor.py 论文.txt --json > 锚定.json  # 机器可读
     python3 scripts/anchor.py 改前.txt --compare 改后.txt   # 比较表面指标
+
+两类检查分开报：①需要补出处或取值的空洞指代；②分句以谓语动词开头、缺主语的
+写法（"…传播基地。推进了西北地区维新运动。"）。第二类只做分句开头的前缀匹配，
+不做句法分析，判不了"速度缓慢"这类名词+形容词残句，也判不了主语谓语不一致。
 """
 
 import argparse
@@ -98,6 +102,156 @@ PATTERNS = [
         "fix": "说明不确定性来自哪里（如「受限于 n=12，区间较宽」），否则删掉缓和词直接陈述。",
     },
 ]
+
+# --------------------------------------------------------------------------- #
+#  主语缺失（"每句话讲清楚谁在做什么"里可测的那一半）
+#
+#  只覆盖**分句开头**的谓语动词 —— "…传播基地。推进了西北地区维新运动。"这类
+#  承接上句时把主语一起省掉的写法。中文合法地允许无主句（祈使、介词短语打头、
+#  承接上文），所以守卫比命中更重要：宁可漏报，不要误报。
+#
+#  不做句法分析，因此**不判**"速度缓慢"这类名词+形容词的残句，也不判主语与
+#  谓语数不一致、动词搭配错误。命中只说明这一处值得人工看一眼。
+# --------------------------------------------------------------------------- #
+
+# 只收在分句开头基本只能是谓语、且缺主语就明显不通的词。
+# 刻意排除「研究/分析/影响/反映/存在/支持/处理/形成/产生/包括/具有」这类
+# 名动兼类词 —— 它们出现在分句开头时更常是名词（"研究结果表明…"）。
+PRED_VERBS = (
+    "提出", "定义", "给出", "构建", "建立", "实现", "采用", "运用", "推进", "促进",
+    "提高", "降低", "增强", "得出", "得到", "证明", "发现", "指出", "认为", "表明",
+    "显示", "强调", "主张", "阐发", "显发", "阐述", "论述", "论证", "归纳", "梳理",
+    "总结", "回顾", "引入", "设计", "开发", "拓展", "深化", "丰富", "完善", "优化",
+    "改进", "提升", "加强", "保障", "维护", "支撑", "驱动", "引领", "带动", "制约",
+    "限制", "阻碍", "削弱", "损害", "危及", "缓解", "消除", "避免", "防止", "确保",
+    "保证", "满足", "适应", "符合", "违背", "突破", "超越", "承担", "履行", "借鉴",
+    "沿用", "修正", "更正", "补充", "拆分", "合并", "测度", "刻画", "验证",
+)
+PRED_VERBS = tuple(sorted(PRED_VERBS, key=len, reverse=True))
+
+# 分句开头可以合法省略主语的副词/连接成分，先剥掉再判断。
+LEAD_SKIP = tuple(sorted((
+    "并且", "而且", "此外", "另外", "同时", "因此", "从而", "进而", "然后", "最后",
+    "首先", "其次", "再次", "然而", "但是", "不过", "总之", "综上", "可见",
+    "由此可见", "值得注意", "具体而言", "换言之", "也就是说", "事实上", "实际上",
+    "目前", "近年来", "当前", "以往", "但", "而", "并", "也", "还", "又", "更",
+    "都", "均", "再", "则", "却", "即", "就", "才", "已", "正", "将", "可", "能",
+    "会", "应", "须", "必须", "应当", "需要", "进一步", "故", "于是",
+), key=len, reverse=True))
+
+# 分句以这些成分开头时，是状语/介词短语，主语可以在后文或整句层面出现。
+PREP_HEAD = tuple(sorted((
+    "通过", "随着", "基于", "针对", "根据", "结合", "围绕", "鉴于", "为了", "由于",
+    "除了", "经过", "依照", "按照", "依据", "凭借", "借助", "利用", "面向", "关于",
+    "对于", "在", "对", "由", "自", "从", "以", "把", "被", "给", "据", "沿", "向",
+    "往", "因", "为", "与", "和", "同", "跟",
+), key=len, reverse=True))
+
+# 谓语动词后接这些词时，整段其实是名词短语（"设计过程""优化方案"），不是谓语。
+NOUN_TAIL = tuple(sorted((
+    "过程", "方法", "方案", "结果", "工作", "阶段", "要求", "规范", "标准", "原则",
+    "思路", "理念", "目标", "任务", "结构", "参数", "变量", "指标", "模型", "系统",
+    "流程", "步骤", "内容", "部分", "问题", "方面", "环节", "机制", "模式", "框架",
+    "体系", "特征", "规律", "趋势", "能力", "水平", "程度", "范围", "条件", "依据",
+    "基础", "背景", "意义", "价值", "作用", "局限", "不足", "展望", "者", "性",
+    "化", "度", "量", "率",
+), key=len, reverse=True))
+
+_QUOTE_PAIRS = (("“", "”"), ("「", "」"), ("『", "』"), ("《", "》"),
+                ("（", "）"), ("(", ")"), ("\"", "\""), ("'", "'"))
+_BOUND = set("，,。！？；;\n")
+CLAUSE_MIN = 4
+
+
+def _mask_quoted(text: str) -> str:
+    """把引号/括号内的字符换成占位符，避免在引文内部断句。"""
+    out = list(text)
+    i, n = 0, len(text)
+    while i < n:
+        paired = False
+        for lo, hi in _QUOTE_PAIRS:
+            if text.startswith(lo, i):
+                j = text.find(hi, i + len(lo))
+                if j != -1:
+                    for k in range(i + len(lo), j):
+                        out[k] = "□"
+                    i = j + len(hi)
+                    paired = True
+                    break
+        if not paired:
+            i += 1
+    return "".join(out)
+
+
+def _strip_lead(seg: str) -> int:
+    """剥掉分句开头的标点与副词/连接成分，返回内容起点。"""
+    i, moved = 0, True
+    while moved:
+        moved = False
+        while i < len(seg) and seg[i] in " \t，,。；;：:":
+            i += 1
+            moved = True
+        for w in LEAD_SKIP:
+            if seg.startswith(w, i):
+                i += len(w)
+                moved = True
+                break
+    return i
+
+
+def _check_clause(raw: str, seg: str, base: int, prev_prep: bool):
+    i = _strip_lead(seg)
+    rest = seg[i:]
+    if cjk_len(rest) < CLAUSE_MIN:
+        return None
+    if any(rest.startswith(w) for w in PREP_HEAD):
+        return None
+    verb = next((w for w in PRED_VERBS if rest.startswith(w)), None)
+    if not verb:
+        return None
+    after = rest[len(verb):]
+    if not after or after.startswith("的"):
+        return None          # "提出的方法…" 是定语，不是谓语
+    if any(after.startswith(t) for t in NOUN_TAIL):
+        return None          # "设计过程…" 是名词短语
+    return {
+        "pattern": "subjectless_clause",
+        "name": "分句缺主语",
+        "matched": verb,
+        "quote": raw.strip()[:80],
+        "unit_start": base,
+        "offset": base + i,
+        "soft": prev_prep,
+        "why": ("该分句以谓语动词「%s」开头，前面没有出现施动者；"
+                "读者要靠上句猜是谁做的。" % verb),
+        "fix": ("若该分句的施动者与上句不同，补回主语（谁提出/谁验证）；"
+                "否则并回上句作宾语或定语。摘要体裁里承接上句的省略是常规写法，"
+                "不必逐句补。"),
+    }
+
+
+def scan_subjectless(text: str):
+    """返回分句缺主语的命中列表。`soft=True` 表示上一分句是状语（通过/基于…），
+    属中文可接受的无主句，只提示不计数为主指标。"""
+    masked = _mask_quoted(text)
+    hits, start, prev_prep = [], 0, False
+    for i in range(len(masked) + 1):
+        if i < len(masked) and masked[i] not in _BOUND:
+            continue
+        raw, seg = text[start:i], masked[start:i]
+        cur_prep = False
+        if cjk_len(seg) >= CLAUSE_MIN:
+            k = _strip_lead(seg)
+            if k < len(seg):
+                cur_prep = any(seg[k:].startswith(w) for w in PREP_HEAD)
+            h = _check_clause(raw, seg, start, prev_prep)
+            if h:
+                hits.append(h)
+        boundary = masked[i] if i < len(masked) else "\n"
+        prev_prep = cur_prep if boundary in "，," else False
+        start = i + 1
+    return hits
+
 
 # 表面具体性线索：命中仅提示可以进一步核查，不证明信息属实。
 ANCHOR_MARKERS = [
@@ -206,7 +360,29 @@ _TECH = re.compile(r"[\u4e00-\u9fff]{2,8}(?:系统|模型|方法|技术|装置|�
                    r"标准|工艺|规范|系数|效应|检验|估计|指数|比率)")
 
 
-def summarize(hits, units):
+def _sl_band(rate: float) -> str:
+    """按人类摘要的分位数分档，不是"合格/不合格"判定。"""
+    if rate <= 10.0:
+        return "低（≤p75）"
+    if rate <= 18.2:
+        return "中（p75–p90）"
+    return "高（>p90）"
+
+
+def count_clauses(text: str) -> int:
+    """按与 scan_subjectless 相同的边界数分句（引号内不计）。"""
+    masked = _mask_quoted(text)
+    n, start = 0, 0
+    for i in range(len(masked) + 1):
+        if i < len(masked) and masked[i] not in _BOUND:
+            continue
+        if cjk_len(masked[start:i]) >= CLAUSE_MIN:
+            n += 1
+        start = i + 1
+    return n
+
+
+def summarize(hits, units, sl=None, clauses=None):
     """汇总。
 
     ⚠️ **主指标是 `concrete_density`（连续量），不是 `anchor_coverage`（二元量）。**
@@ -235,6 +411,16 @@ def summarize(hits, units):
         "vague_density": round(len(hits) / n * 100, 3),
         # 参考指标（二元、粗糙，实测相关性弱）
         "anchor_coverage": round(len(anchored_units) / max(len(units), 1), 4),
+        # 主语缺失：只把 hard（上一分句不是状语）计入速率，soft 单列。
+        # 分母用**分句数**而不是字数 —— 这是一个"每句里有多少句缺主语"的量。
+        "subjectless": len(sl or []),
+        "subjectless_hard": sum(1 for h in (sl or []) if not h["soft"]),
+        "clauses": clauses or 0,
+        "subjectless_rate": round(
+            sum(1 for h in (sl or []) if not h["soft"]) / max(clauses or 0, 1) * 100, 2),
+        # 人类基线（616 篇真实 CNKI 摘要）：p75=10.0%、p90=18.2%
+        "subjectless_band": _sl_band(
+            sum(1 for h in (sl or []) if not h["soft"]) / max(clauses or 0, 1) * 100),
     }
 
 
@@ -260,7 +446,8 @@ def main():
         print(f"错误：无法读取 {args.path}：{e}", file=sys.stderr)
         return 2
     hits, units = scan(text)
-    s = summarize(hits, units)
+    sl = scan_subjectless(text)
+    s = summarize(hits, units, sl, count_clauses(text))
 
     out = {"input": os.path.basename(args.path), "before": s}
     if args.compare:
@@ -273,15 +460,19 @@ def main():
             print(f"错误：无法读取 {args.compare}：{e}", file=sys.stderr)
             return 2
         h2, u2 = scan(t2)
-        out["after"] = summarize(h2, u2)
+        sl2 = scan_subjectless(t2)
+        out["after"] = summarize(h2, u2, sl2, count_clauses(t2))
         out["after"]["input"] = os.path.basename(args.compare)
 
     if args.json:
         out["hits"] = hits[: args.limit] if args.limit else hits
+        out["subjectless_hits"] = sl[: args.limit] if args.limit else sl
         out["units"] = units
         if args.compare:
             # 「改后」的明细也要给出来，否则用户无从核对还剩哪些空洞
             out["hits_after"] = h2[: args.limit] if args.limit else h2
+            out["subjectless_hits_after"] = (
+                sl2[: args.limit] if args.limit else sl2)
             out["units_after"] = u2
         print(json.dumps(out, ensure_ascii=False, indent=2))
         return 0
@@ -296,7 +487,18 @@ def main():
     print(f"具体性密度（每百字具体项数，**主指标**）：{s['concrete_density']:.2f}")
     print(f"空洞密度（每百字空洞指代）：{s['vague_density']:.2f}")
     print(f"（参考）段级覆盖率：{s['anchor_coverage']:.1%} —— 二元量，与检测分数相关性弱")
+    print(f"分句缺主语：{s['subjectless_hard']}/{s['clauses']} 句 "
+          f"= {s['subjectless_rate']:.1f}%  →  {s['subjectless_band']}")
+    print("  基线（616 篇真实 CNKI 摘要）：p50=0.0%  p75=10.0%  p90=18.2%；"
+          "该指标在人类与 AI 摘要上无差异（每百分句 5.63 vs 5.02），"
+          "**不能当作 AIGC 信号**，只用于自查行文。")
     print()
+    for i, h in enumerate(sl[: args.limit] if args.limit else sl, 1):
+        tag = "（上句是状语，可接受）" if h["soft"] else ""
+        print(f"[主{ i }] 分句缺主语{tag}  「{h['quote']}」")
+        print(f"    为什么：{h['why']}")
+        print(f"    怎么补：{h['fix']}")
+        print()
     shown = hits[: args.limit] if args.limit else hits
     for i, h in enumerate(shown, 1):
         print(f"[{i}] {h['name']}  「{h['matched']}」")
@@ -318,6 +520,9 @@ def main():
         print(f"  空洞密度    {s['vague_density']:.2f} → {a['vague_density']:.2f}  "
               f"（{a['vague_density'] - s['vague_density']:+.2f} 每百字）")
         print(f"  字数        {s['chars']} → {a['chars']}（{a['chars'] - s['chars']:+d}）")
+        print(f"  缺主语率    {s['subjectless_rate']:.1f}% → {a['subjectless_rate']:.1f}%"
+              f"（{a['subjectless_rate'] - s['subjectless_rate']:+.1f} 个百分点，"
+              f"{a['subjectless_band']}）")
         # 判据：具体性密度提高 **且** 空洞密度不升高。
         # 只看其一会被绕过：把"某高校"换成"有关院校"空洞数不变但也没变具体；
         # 而只说"具体性提高"会放过"补了具体信息但同时新增空洞"的情况。
