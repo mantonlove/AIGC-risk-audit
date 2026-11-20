@@ -3,6 +3,7 @@
 **中文论文 AIGC 检测争议的审计工具**（知网 / 维普 / PaperPass / 学习通）。
 不做"降 AI 率"改写，只做判断、核查与举证。
 
+- [删掉章节标题，AIGC 疑似度反而涨到 100%](paperpass-heading-deletion.md) —— 成对对照：正文一字未改、五个片段分数完全一致，首页数字从 97.16% 涨到 100%；另附“加权计算”五次复算全部差 0.04–0.17 个百分点的记录。
 - [降 AIGC 率：12 组实测，和它们各自失效的地方](aigc-rate-evidence.md) —— 本项目全部编辑实验的汇总：词表天花板、随机替换对照、拆句守卫、LLM 改写升分、句长离散度、缺主语率标定、检测器在真人文本上的误判。
 - [仓库主页](https://github.com/mantonlove/AIGC-risk-audit) —— 快速开始、能力表、边界。
 - [English README](https://github.com/mantonlove/AIGC-risk-audit/blob/main/README.en.md)
