@@ -82,7 +82,7 @@ references/              platform mechanics, measured baselines, operator effect
 scripts/                 12 scripts, mostly standard library only
 tests/                   regression.py (70 cases); mutation.py mutation tests
 evals/                   trigger and prompt cases
-.github/workflows/       regression on every push (3.11–3.13, Ubuntu + macOS)
+.github/workflows/       regression on every push (Ubuntu × Python 3.11–3.13; macOS via manual dispatch)
 ```
 
 ## License

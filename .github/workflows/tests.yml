@@ -18,15 +18,36 @@ jobs:
       matrix:
         os: [ubuntu-latest]
         python: ["3.11", "3.12", "3.13"]
-        include:
-          - os: macos-latest
-            python: "3.13"
     steps:
       - uses: actions/checkout@v5
 
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
+
+      - name: Show interpreter
+        run: python -VV
+
+      - name: Regression suite (no models needed)
+        run: python tests/regression.py
+
+      - name: Byte-compile every script
+        run: python -m compileall -q scripts tests
+
+  # macOS 由 Actions 手动触发，不挂在 push/PR 上。
+  # 原因：hosted macOS runner 常出现 15 分钟排队后
+  # "The job was not acquired by Runner of type hosted" 而失败，
+  # 那是 runner 供给问题，不是本仓库代码问题，却会让 main 变红。
+  regression-macos:
+    name: regression · macos · py3.13
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
 
       - name: Show interpreter
         run: python -VV

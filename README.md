@@ -82,7 +82,7 @@ references/              平台机制、实测基线、算子效应、方向对�
 scripts/                 12 个脚本，多数纯标准库
 tests/                   regression.py 70 条；mutation.py 突变测试
 evals/                   触发与提示词用例
-.github/workflows/       每次 push 跑回归（3.11–3.13，Ubuntu + macOS）
+.github/workflows/       每次 push 跑回归（Ubuntu × Python 3.11–3.13；macOS 由 Actions 手动触发）
 ```
 
 ## 许可
