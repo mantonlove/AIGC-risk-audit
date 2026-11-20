@@ -10,6 +10,8 @@ It does four things: explain why a high score is suspicious in the first place, 
 
 **It does not predict CNKI / VIP / PaperPass / Chaoxing percentages, and does not promise any target.** Local scores exist only to decide which paragraphs are worth a human read.
 
+Every editing experiment in this repo, summed up (twelve groups, and where each one fails): **[Lowering the AIGC score: twelve measured experiments](docs/aigc-rate-evidence.md)** (Chinese).
+
 ## Quick start (no models required)
 
 Diagnosis, anchoring, evidence inventory, style statistics and rule-based rewriting all run on the Python standard library alone:
@@ -83,6 +85,7 @@ SKILL.md                 entry points and workflow
 references/              platform mechanics, measured baselines, operator effects, direction controls, appeals
 scripts/                 12 scripts, mostly standard library only
 tests/                   regression.py (70 cases); mutation.py mutation tests
+docs/                    the long-form write-up of the twelve experiments
 evals/                   trigger and prompt cases
 .github/workflows/       regression on every push (Ubuntu × Python 3.11–3.13; macOS via manual dispatch)
 ```

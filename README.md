@@ -10,6 +10,8 @@
 
 **它不预测知网、维普、PaperPass、学习通的百分比，也不承诺达标。** 本地分数只用来决定"哪些段落值得人工看一眼"。
 
+全部编辑实验的汇总（十二组实测、每组各自失效的地方）：**[降 AIGC 率：12 组实测](docs/aigc-rate-evidence.md)**。
+
 ## 快速开始（不需要任何模型）
 
 只装 Python 标准库即可运行诊断、核查、存证、文风统计与规则改写：
@@ -83,6 +85,7 @@ SKILL.md                 入口与执行流程
 references/              平台机制、实测基线、算子效应、方向对照、申诉路径
 scripts/                 12 个脚本，多数纯标准库
 tests/                   regression.py 70 条；mutation.py 突变测试
+docs/                    长文：十二组编辑实测（docs/index.md 为 Pages 首页）
 evals/                   触发与提示词用例
 .github/workflows/       每次 push 跑回归（Ubuntu × Python 3.11–3.13；macOS 由 Actions 手动触发）
 ```
