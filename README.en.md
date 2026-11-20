@@ -1,8 +1,10 @@
-# AIGC risk audit · auditing AI-detection disputes in Chinese academic writing
+# AIGC risk audit · auditing AI-detection disputes in Chinese academic writing (CNKI / VIP / PaperPass / Chaoxing)
 
 [简体中文](README.md) ｜ **English** ｜ ![tests](https://github.com/mantonlove/AIGC-risk-audit/actions/workflows/tests.yml/badge.svg)
 
 An **audit** toolkit, not a "lower your AI score" rewriter.
+
+This is where people land when they search **why is my CNKI AIGC score so high**, **how to reduce the AI-suspected ratio on a Chinese thesis**, **how to appeal an AI-detection false positive**, **is the VIP / PaperPass / Chaoxing AIGC percentage reliable**, or **does deleting section headings change the reported score**. The repo covers the **diagnosis and evidence** half of those questions. Rewriting is a small part of it — and most of the rewriting techniques tested below did not work.
 
 It does four things: explain why a high score is suspicious in the first place, point out which claims in the text have no support, turn the author's own process material into a submittable inventory, and — when only public material exists — explain how a given platform's reported numbers are actually computed.
 

@@ -1,8 +1,10 @@
-# AIGC risk audit · 中文论文 AIGC 检测争议与写作审查
+# AIGC risk audit · 中文论文 AIGC 检测争议与写作审查（知网 / 维普 / PaperPass / 学习通）
 
 **简体中文** ｜ [English](README.en.md) ｜ ![tests](https://github.com/mantonlove/AIGC-risk-audit/actions/workflows/tests.yml/badge.svg)
 
 一套**审计**工具，不是"降 AI 率"改写器。
+
+搜到这里的问题通常长这样：**知网 AIGC 检测值太高怎么办**、**论文 AI 疑似度 / AI 特征值怎么降**、**AI 检测误判怎么申诉**、**维普 / PaperPass / 学习通 的 AIGC 总体疑似度准不准**、**删除章节标题会不会改变报告分数**。这个仓库处理的是这些问题里**判断与举证**的那一半——改写只占很小一块，而且下面实测过的那几种改写大多不管用。
 
 它做四件事：判断一处高分为何可疑、指出文里哪些论断缺依据、把作者手上的过程材料整理成可提交的清单、以及在只有公开资料时说明某个平台的字段到底是怎么算的。
 
